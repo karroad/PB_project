@@ -1,0 +1,27 @@
+# Shared reverse proxy for the Docker hosting adapter.
+# Every generated site joins the external `siteforge` network and is routed by Host() labels.
+#   docker network create siteforge
+#   docker compose -f infra/traefik/docker-compose.yml up -d
+# Then set DOCKER_ENABLED=true (and SERVER_PUBLIC_IP for DNS automation) in backend/.env.
+services:
+  traefik:
+    image: traefik:v3.1
+    restart: unless-stopped
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --providers.docker.network=siteforge
+      - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
+      - --certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web
+      - --certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL:-admin@example.com}
+      - --certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json
+    ports: ["80:80", "443:443"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - letsencrypt:/letsencrypt
+    networks: [siteforge]
+networks:
+  siteforge:
+    external: true
+volumes: { letsencrypt: {} }

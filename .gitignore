@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+backend/data/
+backend/.env
+
+# Node
+node_modules/
+.next/
+frontend/.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build caches / local artefacts
+*.tsbuildinfo
+e2e-screenshots/
+*.log
+.env
+.env.*
+!.env.example

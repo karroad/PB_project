@@ -1,0 +1,56 @@
+# Production-style stack: PostgreSQL + Redis + API + N workers + dashboard.
+#   docker compose up -d --build
+#   docker compose up -d --scale worker=4      # add generation capacity
+# Set secrets in a .env file next to this file (see backend/.env.example).
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: siteforge
+      POSTGRES_USER: siteforge
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-siteforge}
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U siteforge"], interval: 5s, retries: 10 }
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes: [redisdata:/data]
+
+  api:
+    build: ./backend
+    restart: unless-stopped
+    env_file: [./backend/.env]
+    environment: &common
+      DATABASE_URL: postgresql+psycopg://siteforge:${POSTGRES_PASSWORD:-siteforge}@postgres:5432/siteforge
+      REDIS_URL: redis://redis:6379/0
+      RUN_EMBEDDED_WORKER: "false"   # jobs run in the dedicated workers below
+      RUN_MONITOR: "true"
+      DATA_DIR: /app/data
+    volumes: [sitedata:/app/data]
+    depends_on: { postgres: { condition: service_healthy }, redis: { condition: service_started } }
+    ports: ["8000:8000"]
+
+  worker:
+    build: ./backend
+    restart: unless-stopped
+    command: ["python", "-m", "app.worker"]
+    env_file: [./backend/.env]
+    environment:
+      <<: *common
+      RUN_MONITOR: "false"
+    volumes: [sitedata:/app/data]
+    depends_on: { postgres: { condition: service_healthy }, redis: { condition: service_started } }
+    deploy: { replicas: 2 }
+
+  dashboard:
+    build:
+      context: ./frontend
+      args: { NEXT_PUBLIC_API_URL: "${PUBLIC_API_URL:-http://localhost:8000}" }
+    restart: unless-stopped
+    ports: ["3000:3000"]
+    depends_on: [api]
+
+volumes: { pgdata: {}, redisdata: {}, sitedata: {} }
