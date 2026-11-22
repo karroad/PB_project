@@ -151,8 +151,12 @@ class ZaiCodeProvider(CodeProvider):
         url = settings.ZAI_BASE_URL.rstrip("/") + "/v1/messages"
         headers = {"Authorization": f"Bearer {settings.ZAI_API_KEY}", "x-api-key": settings.ZAI_API_KEY,
                    "anthropic-version": "2023-06-01", "content-type": "application/json"}
+        # GLM Flash enables "thinking" by default, which burns the whole token budget and ~150s
+        # per call on reasoning and emits little/no code (hits max_tokens with 0 output). Disabling
+        # it makes code generation fast (~30s) and actually return the HTML/CSS.
         body = {"model": settings.ZAI_MODEL, "max_tokens": settings.CODE_MAX_TOKENS,
-                "system": system, "messages": [{"role": "user", "content": prompt}]}
+                "system": system, "messages": [{"role": "user", "content": prompt}],
+                "thinking": {"type": "disabled"}}
         try:
             async with httpx.AsyncClient(timeout=settings.CODE_TIMEOUT_SECONDS) as c:
                 r = await c.post(url, json=body, headers=headers)
