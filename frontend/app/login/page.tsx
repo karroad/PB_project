@@ -16,7 +16,7 @@ const FEATURES = [
 export default function LoginPage() {
   const { login, user } = useAuth();
   const router = useRouter();
-  const [email, setEmail] = useState("admin@siteforge.local");
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<{ message: string } | null>(null);
@@ -60,8 +60,8 @@ export default function LoginPage() {
           <h2 className="font-display text-2xl font-bold">Welcome back</h2>
           <p className="mb-6 mt-1 text-sm text-slate-500">Sign in to your website factory.</p>
           <div className="space-y-4">
-            <div><label className="label" htmlFor="email">Email</label><input id="email" className="input" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" required /></div>
-            <div><label className="label" htmlFor="pw">Password</label><input id="pw" type="password" className="input" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" required placeholder="Default: admin123" /></div>
+            <div><label className="label" htmlFor="email">Email</label><input id="email" className="input" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" required placeholder="you@company.com" /></div>
+            <div><label className="label" htmlFor="pw">Password</label><input id="pw" type="password" className="input" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" required placeholder="••••••••" /></div>
             <ErrorBox error={error} />
             <Button type="submit" size="lg" loading={busy} className="w-full">Sign in <ArrowRight className="h-4 w-4" /></Button>
           </div>
