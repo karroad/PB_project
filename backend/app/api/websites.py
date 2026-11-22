@@ -16,7 +16,7 @@ from ..config import settings
 from ..database import get_db
 from ..deps import accessible_website_ids, audit, get_current_user, get_website_for_user, require_role
 from ..errors import PipelineError
-from ..models import Deployment, Domain, FormSubmission, HealthCheck, Job, ProviderAccount, User, Website, WebsiteMember
+from ..models import Deployment, Domain, FormSubmission, Server, HealthCheck, Job, ProviderAccount, User, Website, WebsiteMember
 from ..orchestrator.queue import queue
 from ..orchestrator.runner import create_job
 from ..schemas import ChangeRequest, DeleteConfirm, PublishRequest, RecommendIn, WebsiteCreate, WebsiteUpdate
@@ -146,7 +146,8 @@ async def create_website(body: WebsiteCreate, request: Request, db: Session = De
                    stack_selected_by="user", domain=body.domain, require_approval=body.require_approval or not settings.AUTO_PUBLISH,
                    hosting_provider=body.hosting_provider, hosting_account_id=body.hosting_account_id, dns_provider=body.dns_provider,
                    dns_account_id=body.dns_account_id, owner_id=user.id,
-                   config={"name_from_ai": not body.name, "domain_mode": mode}, status="draft")
+                   config={"name_from_ai": not body.name, "domain_mode": mode,
+                           **({"reference_url": body.reference_url} if body.reference_url else {})}, status="draft")
     db.add(site)
     db.commit()
     try:
@@ -168,7 +169,7 @@ async def _check_domain_choice(db: Session, site: Website, hosting_key: str, dns
         raise HTTPException(422, "Choose whether to buy a new domain or use one you already own")
     if mode == "existing":
         return mode, None
-    public = bool(settings.SERVER_PUBLIC_IP) or hosting_key == "hetzner" or settings.SANDBOX_PROVIDERS
+    public = bool(settings.SERVER_PUBLIC_IP) or hosting_key in ("hetzner", "server") or settings.SANDBOX_PROVIDERS
     if not public:
         raise HTTPException(422, "A purchased domain must point at a public server: set SERVER_PUBLIC_IP on the backend "
                                  "(or choose Hetzner hosting) before buying domains")
@@ -197,11 +198,25 @@ async def publish(website_id: str, body: PublishRequest, request: Request, db: S
     if not (site.config or {}).get("preview"):
         raise HTTPException(409, "Build and review the preview before publishing")
     _validate_targets(db, None, body.hosting_provider, body.hosting_account_id, body.dns_provider, body.dns_account_id, body.domain)
+    if body.hosting_provider == "server":
+        server = db.get(Server, body.server_id) if body.server_id else None
+        if not server:
+            raise HTTPException(422, "Choose one of your servers")
+        if server.status == "error":
+            raise HTTPException(422, f"Server {server.name} has a problem: {server.error or 'unreachable'} — fix it under Servers first")
+        used = db.scalar(select(func.count()).select_from(Website).where(Website.server_id == server.id, Website.id != site.id, Website.status != "archived")) or 0
+        if server.max_sites and used >= server.max_sites:
+            raise HTTPException(409, f"Server {server.name} is full ({used}/{server.max_sites} sites)")
+        if server.web_server == "traefik" and not body.domain:
+            raise HTTPException(422, f"{server.name} serves websites through its existing Traefik, which routes by domain - add a domain")
+        if (server.web_config or {}).get("conflict"):
+            raise HTTPException(422, f"Ports 80/443 on {server.name} belong to {server.web_server} - SiteForge can't serve websites there")
     if body.domain and db.scalar(select(Website.id).where(Website.domain == body.domain, Website.id != site.id, Website.status != "archived")):
         raise HTTPException(409, "Another website already uses this domain")
     mode, quote = await _check_domain_choice(db, site, body.hosting_provider, body.dns_provider, body.dns_account_id, body.domain, body.domain_mode)
 
     site.hosting_provider, site.hosting_account_id = body.hosting_provider, body.hosting_account_id
+    site.server_id = body.server_id if body.hosting_provider == "server" else None
     site.dns_provider, site.dns_account_id, site.domain = body.dns_provider, body.dns_account_id, body.domain
     site.config = {**(site.config or {}), "domain_mode": mode}
     if quote:  # remember the quoted price; the infrastructure agent re-checks it right before buying
@@ -322,7 +337,7 @@ async def rollback(website_id: str, deployment_id: str, request: Request, db: Se
     target = db.get(Deployment, deployment_id)
     if not target or target.website_id != site.id or target.status == "failed":
         raise HTTPException(404, "Deployment not found or not eligible for rollback")
-    if target.artifact_path and not Path(target.artifact_path).exists():
+    if target.provider in ("local", "docker") and target.artifact_path and not Path(target.artifact_path).exists():
         raise HTTPException(410, "Artefact for this deployment no longer exists")
     try:
         await get_hosting(site.hosting_provider).activate(site, target)
@@ -429,6 +444,12 @@ async def delete_website(website_id: str, body: DeleteConfirm, request: Request,
 
         proc = await asyncio.create_subprocess_exec("docker", "compose", "-p", f"sf-{site.slug}", "down", stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
         await proc.wait()
+    if site.hosting_provider == "server" and site.server_id:
+        from ..servers.ops import remove_site
+        try:
+            await remove_site(site.server_id, site.slug)
+        except PipelineError as e:
+            raise HTTPException(502, f"Couldn't remove the site from its server: {e.message}")
     slug, sid = site.slug, site.id
     db.delete(site)
     db.commit()

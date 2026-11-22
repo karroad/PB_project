@@ -21,13 +21,28 @@ class Settings(BaseSettings):
     ADMIN_EMAIL: str = "admin@siteforge.local"
     ADMIN_PASSWORD: str = "admin123"
 
-    AI_PROVIDER: str = "auto"  # auto | anthropic | offline
+    AI_PROVIDER: str = "auto"  # auto | anthropic | claude_cli | offline
     ANTHROPIC_API_KEY: str = ""
     ANTHROPIC_MODEL: str = "claude-opus-5-5"
     ANTHROPIC_EFFORT: str = "medium"
+    # claude_cli: run content on the monthly Claude subscription via the Claude Code CLI
+    # (the machine must have `claude` installed and be logged in with that account, e.g. server 65/116).
+    CLAUDE_CLI_BIN: str = "claude"
+    CLAUDE_CLI_MODEL: str = ""        # empty -> the CLI/subscription default model
+    CLAUDE_CLI_TIMEOUT: int = 240
 
     FAL_KEY: str = ""
     FAL_MODEL: str = "fal-ai/flux/schnell"
+
+    # Code generation: the AI that writes each site's unique HTML/CSS/JS (separate from the content AI above).
+    #   auto -> z.ai when ZAI_API_KEY is set, else the deterministic template renderer (offline).
+    AI_CODE_GENERATION: bool = True          # False -> always use the built-in template renderer
+    CODE_PROVIDER: str = "auto"              # auto | zai | offline
+    ZAI_API_KEY: str = ""                    # z.ai GLM Coding Plan key (writes the code)
+    ZAI_BASE_URL: str = "https://api.z.ai/api/anthropic"   # Anthropic-compatible endpoint used by the coding plan
+    ZAI_MODEL: str = "glm-5.3-flash"         # client: use Flash only (the full model is ~4x the price)
+    CODE_MAX_TOKENS: int = 32000
+    CODE_TIMEOUT_SECONDS: int = 180
 
     MAX_CONCURRENT_JOBS: int = 3
     AI_MAX_CONCURRENT_REQUESTS: int = 4

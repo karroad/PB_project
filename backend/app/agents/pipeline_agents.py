@@ -14,6 +14,9 @@ from ..adapters.hosting import get_hosting
 from ..adapters.stacks import STACKS, get_stack
 from ..ai import offline
 from ..ai.images import generate_image, svg_logo
+from ..ai.llm import get_code_provider
+from ..ai.reference import fetch_reference
+from ..ai.site_builder import build_ai_site
 from ..config import settings
 from ..errors import ConfigurationError, PipelineError, QualityGateError, RetryableError
 from .base import Agent, StepContext, chips, kv
@@ -24,6 +27,38 @@ def media_url(slug: str, rel: str) -> str:
     return f"/api/media/{slug}/{rel.split('/')[-1]}"
 
 
+async def load_reference(ctx) -> dict | None:
+    """Fetch the reference website's inspiration cues once and cache them in the job state.
+    Non-fatal: a bad/blocked reference is recorded and the pipeline continues without it."""
+    url = ctx.state.get("reference_url")
+    if not url:
+        return None
+    cached = ctx.state.get("reference")
+    if isinstance(cached, dict) and (cached.get("palette") is not None or cached.get("error")):
+        return cached if not cached.get("error") else None
+    await ctx.log(f"Studying reference site {url} for inspiration", progress=18)
+    try:
+        cues = await fetch_reference(url)
+    except Exception as e:  # noqa: BLE001 — reference is optional; never fail generation over it
+        ctx.state["reference"] = {"url": url, "error": str(getattr(e, "message", e))[:200]}
+        await ctx.log(f"Couldn't use the reference ({getattr(e, 'message', e)}) — continuing without it", level="warning")
+        return None
+    ctx.state["reference"] = cues
+    bits = [f"{len(cues['palette'])} colours", f"{len(cues['fonts'])} fonts", f"{len(cues['headings'])} headings"]
+    await ctx.log(f"Reference read: {cues['site']} — {', '.join(bits)} (used as inspiration, not copied)", level="success", progress=28)
+    return cues
+
+
+def reference_context(ctx) -> dict | None:
+    """Compact cue set passed to the AI as inspiration. The AI is told not to copy the reference's text."""
+    ref = ctx.state.get("reference")
+    if not isinstance(ref, dict) or ref.get("error"):
+        return None
+    return {"inspiration_only_do_not_copy_text": True, "site": ref.get("site"), "title": ref.get("title"),
+            "description": ref.get("description"), "headings": ref.get("headings"), "nav": ref.get("nav"),
+            "palette": ref.get("palette"), "fonts": ref.get("fonts"), "keywords": ref.get("keywords")}
+
+
 # ----------------------------------------------------------------------------- 1
 class RequirementsAgent(Agent):
     key, title, agent_name = "requirements", "Understand requirements", "Requirements Agent"
@@ -32,10 +67,16 @@ class RequirementsAgent(Agent):
     async def run(self, ctx: StepContext) -> dict:
         await ctx.log("Parsing the instruction", progress=10)
         fallback = offline.requirements(ctx.site.prompt, ctx.site.stack)
+        ref = await load_reference(ctx)
         await ctx.log(f"Topic detected: “{fallback['topic']}” · theme: {fallback['theme']}", progress=35)
+        ctx_in = {"instruction": ctx.site.prompt, "selected_stack": ctx.site.stack}
+        if ref:
+            ctx_in["reference"] = reference_context(ctx)
         req = await ctx.ai_json("Requirements analyst",
                                 "Analyse this website instruction and extract structured requirements. Keep 'theme' one of: "
-                                + ", ".join(offline.THEMES), fallback, {"instruction": ctx.site.prompt, "selected_stack": ctx.site.stack})
+                                + ", ".join(offline.THEMES)
+                                + (". A reference site is provided for inspiration on purpose, audience and structure — take ideas, do not copy its wording." if ref else ""),
+                                fallback, ctx_in)
         if req.get("theme") not in offline.THEMES:
             req["theme"] = fallback["theme"]
         rec = req.get("stack_recommendation") or fallback["stack_recommendation"]
@@ -53,11 +94,15 @@ class RequirementsAgent(Agent):
             ctx.update_site(name=req["site_name"])
         ctx.state["requirements"] = req
         await ctx.log(f"{len(req['features'])} features identified", level="success", progress=100)
-        return {"summary": f"{req['site_name']} — {req['purpose']}", "highlights": [
+        highlights = [
             kv(("Topic", req["topic_title"]), ("Audience", req["audience"]), ("Tone", req["tone"]),
                ("Stack", f"{STACKS[ctx.site.stack].info.name} ({'AI' if ctx.site_updates.get('stack_selected_by') == 'ai' else 'user'})")),
             chips("Features", req["features"]),
-        ]}
+        ]
+        if ref:
+            highlights.append(kv(("Inspired by", ref["site"]), ("Reference palette", ", ".join(ref["palette"]) or "—"),
+                                 ("Reference fonts", ", ".join(ref["fonts"]) or "—")))
+        return {"summary": f"{req['site_name']} — {req['purpose']}", "highlights": highlights}
 
 
 # ----------------------------------------------------------------------------- 2
@@ -69,7 +114,11 @@ class PlanningAgent(Agent):
         req = ctx.state["requirements"]
         await ctx.log("Drafting sitemap and information architecture", progress=20)
         fb = offline.plan(req, ctx.site.stack)
-        plan = await ctx.ai_json("Information architect", "Create the sitemap and technical plan. Keep the page slugs of the example (you may add pages).", fb, {"requirements": req})
+        ref = reference_context(ctx)
+        plan = await ctx.ai_json("Information architect",
+                                 "Create the sitemap and technical plan. Keep the page slugs of the example (you may add pages)."
+                                 + (" A reference site's headings and navigation are provided — let them inspire the sections and sitemap." if ref else ""),
+                                 fb, {"requirements": req, **({"reference": ref} if ref else {})})
         known = {p["slug"] for p in fb["sitemap"]}
         plan["sitemap"] = [p for p in plan["sitemap"] if p.get("slug") in known] or fb["sitemap"]
         await ctx.log(f"Sitemap: {len(plan['sitemap'])} pages", progress=55)
@@ -91,7 +140,19 @@ class BrandingAgent(Agent):
         req = ctx.state["requirements"]
         await ctx.log("Exploring brand directions", progress=15)
         fb = offline.brand(req)
-        b = await ctx.ai_json("Brand designer", "Create a brand identity. Colours must be 6-digit hex with good text contrast.", fb, {"requirements": req})
+        ref = reference_context(ctx)
+        if ref and ref.get("palette"):  # seed the offline fallback from the reference's own colours
+            pal = ref["palette"]
+            for i, key in enumerate(("primary", "secondary", "accent")):
+                if i < len(pal) and key in fb["palette"]:
+                    fb["palette"][key] = pal[i]
+            if ref.get("fonts"):
+                fb["fonts"]["heading"] = ref["fonts"][0]
+                fb["fonts"]["body"] = ref["fonts"][1] if len(ref["fonts"]) > 1 else ref["fonts"][0]
+        b = await ctx.ai_json("Brand designer",
+                              "Create a brand identity. Colours must be 6-digit hex with good text contrast."
+                              + (" A reference site's palette and fonts are provided — draw inspiration from them for a cohesive look." if ref else ""),
+                              fb, {"requirements": req, **({"reference": {"palette": ref["palette"], "fonts": ref["fonts"]}} if ref else {})})
         for k, v in list(b["palette"].items()):
             if not re.fullmatch(r"#[0-9a-fA-F]{6}", str(v)):
                 b["palette"][k] = fb["palette"].get(k, "#333333")
@@ -127,10 +188,15 @@ class ContentAgent(Agent):
         req, plan, brand = ctx.state["requirements"], ctx.state["plan"], ctx.state["brand"]
         await ctx.log("Writing homepage and page copy", progress=10)
         fb = offline.content(req, plan, brand)
+        ref = reference_context(ctx)
+        ctx_in = {"requirements": req, "brand": {"name": brand["name"], "voice": brand["voice"]}, "pages": [p["title"] for p in plan["sitemap"]]}
+        if ref:
+            ctx_in["reference_topics"] = {"headings": ref.get("headings"), "keywords": ref.get("keywords"), "site": ref.get("site")}
         c = await ctx.ai_json("Senior content writer",
                               "Write original website copy and 4 blog articles (5 paragraphs each, 60-110 words per paragraph). "
-                              "Keep slugs URL-safe. Do not invent statistics, testimonials or credentials.",
-                              fb, {"requirements": req, "brand": {"name": brand["name"], "voice": brand["voice"]}, "pages": [p["title"] for p in plan["sitemap"]]})
+                              "Keep slugs URL-safe. Do not invent statistics, testimonials or credentials."
+                              + (" Reference topics are provided for inspiration on themes to cover — write fresh, original copy; never reuse the reference's sentences." if ref else ""),
+                              fb, ctx_in)
         for a in c["articles"]:
             a["slug"] = offline.slugify(a.get("slug") or a["title"])
         await ctx.log(f"{len(c['articles'])} articles drafted", progress=45)
@@ -255,25 +321,38 @@ class DevelopmentAgent(Agent):
             await ctx.log(f"Building for production at {base_url}")
         spec = {**{k: ctx.state[k] for k in ("requirements", "plan", "brand", "content", "seo", "images")},
                 "slug": ctx.site.slug, "base_url": base_url, "domain": ctx.site.domain, "media_dir": str(ctx.site.media_dir),
+                "reference": ctx.state.get("reference"),
                 "form_action": f"{settings.PUBLIC_BASE_URL.rstrip('/')}/api/public/forms/{ctx.site.slug}"}
         source, build = ctx.site.workspace / "source", ctx.site.workspace / "build"
         if source.exists():
             shutil.rmtree(source)
-        await ctx.log(f"Scaffolding {adapter.info.name} project from template", progress=15)
+        await ctx.log(f"Scaffolding {adapter.info.name} project", progress=15)
         src_files = adapter.scaffold(spec, source)
-        for f in src_files[:6]:
-            await ctx.log(f"  + {f}")
         await ctx.log(f"{len(src_files)} source files generated", progress=50)
 
-        async def blog(msg):
-            await ctx.log(msg)
+        async def blog(msg, progress=None):
+            await ctx.log(msg, progress=progress)
 
-        built = await adapter.build(spec, source, build, ctx.site.media_dir, base_url, ctx.site.slug, blog)
+        authored_by = "template"
+        code_provider = get_code_provider()
+        if not code_provider.offline:
+            try:
+                await ctx.log(f"Designing & coding a unique site with {settings.ZAI_MODEL}", progress=25)
+                built = await build_ai_site(spec, build, ctx.site.media_dir, base_url, ctx.site.slug, blog)
+                authored_by = settings.ZAI_MODEL
+            except Exception as e:  # noqa: BLE001 — never fail the build over the code model; fall back to the renderer
+                await ctx.log(f"Code model unavailable ({getattr(e, 'message', e)}); using the built-in renderer", level="warning")
+                built = await adapter.build(spec, source, build, ctx.site.media_dir, base_url, ctx.site.slug, blog)
+        else:
+            built = await adapter.build(spec, source, build, ctx.site.media_dir, base_url, ctx.site.slug, blog)
         await ctx.log(f"Production build: {len(built)} files", level="success", progress=100)
         ctx.state["build"] = {"stack": adapter.info.key, "source_files": len(src_files), "build_files": len(built), "base_url": base_url,
-                              "source_tree": sorted(src_files)[:80]}
-        return {"summary": f"{adapter.info.name} project with {len(src_files)} source files", "highlights": [
-            kv(("Stack", adapter.info.name), ("Source files", len(src_files)), ("Build files", len(built)), ("Deploy model", adapter.info.deploy_model)),
+                              "authored_by": authored_by, "source_tree": sorted(src_files)[:80]}
+        unique = authored_by != "template"
+        return {"summary": (f"Unique {adapter.info.name} site coded by {authored_by}" if unique else f"{adapter.info.name} project with {len(src_files)} source files"),
+                "highlights": [
+            kv(("Stack", adapter.info.name), ("Code authored by", authored_by if unique else "built-in renderer"),
+               ("Build files", len(built)), ("Deploy model", adapter.info.deploy_model)),
             chips("Files", sorted(src_files)[:10]),
         ]}
 
@@ -409,7 +488,7 @@ class InfrastructureAgent(Agent):
         if hosting.requires_approval and settings.APPROVAL_PROVISION_HOSTING:
             ctx.require_approval("provision_hosting", f"Provision {hosting.name} resources for {site.domain or site.slug}", {"plan": plan})
             await ctx.log("Approval granted — provisioning", progress=60)
-        if hosting.requires_approval:
+        if hosting.requires_approval or getattr(hosting, "always_provision", False):
             infra.update(await hosting.provision(site, creds, ctx.log))
 
         if dns.key != "none" and site.domain:
@@ -495,7 +574,22 @@ class VerifyAgent(Agent):
         url = dep.get("url", "")
         await ctx.log(f"Probing {url}", progress=15)
         result = {"checked": False}
-        if url.startswith("http") and "<" not in url:
+        hosting = get_hosting(ctx.site.hosting_provider)
+        if hasattr(hosting, "verify"):
+            await ctx.log("Requesting the site from the server itself (works before DNS has propagated)", progress=30)
+            result = await hosting.verify(ctx.site, url)
+            if result.get("status") != 200:
+                rolled = ctx.recorder.rollback_traffic(dep.get("previous"))
+                if rolled and dep.get("previous"):
+                    from ..models import Deployment
+                    prev = ctx.recorder.db.get(Deployment, dep["previous"])
+                    await hosting.activate(ctx.site, prev)  # switch the server back too
+                raise PipelineError(f"Server returned HTTP {result.get('raw_status')} for the new release" + (f"; rolled back to {rolled}" if rolled else ""),
+                                    code="verification_failed", hint="Check the server's web-server logs (journalctl -u caddy).")
+            await ctx.log(f"{result['via']} answers HTTP {result['raw_status']}", level="success", progress=60)
+            if result.get("https"):
+                await ctx.log("HTTPS certificate is issued automatically once DNS points to the server", level="info")
+        elif url.startswith("http") and "<" not in url:
             last_err = None
             for attempt in range(3):
                 try:

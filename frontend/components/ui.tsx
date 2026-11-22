@@ -10,7 +10,7 @@ export function Button({ variant = "primary", size = "md", loading, className, c
   React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: "primary" | "ghost" | "danger" | "subtle"; size?: "sm" | "md" | "lg"; loading?: boolean }) {
   return (
     <button {...p} disabled={p.disabled || loading}
-      className={clsx("relative inline-flex items-center justify-center gap-2 rounded-xl font-medium transition active:scale-[.98] disabled:cursor-not-allowed disabled:opacity-50",
+      className={clsx("relative inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-xl font-medium transition active:scale-[.98] disabled:cursor-not-allowed disabled:opacity-50",
         { sm: "px-3 py-1.5 text-xs", md: "px-4 py-2 text-sm", lg: "px-6 py-3 text-base" }[size],
         variant === "primary" && "bg-grad text-white shadow-lg shadow-violet-600/25 hover:shadow-violet-500/40 hover:brightness-110",
         variant === "ghost" && "border border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100",
@@ -46,7 +46,10 @@ const STATUS: Record<string, { label: string; cls: string; dot: string }> = {
   pending: { label: "Pending", cls: "bg-amber-500/10 text-amber-700 border-amber-500/30", dot: "bg-amber-400" },
   approved: { label: "Approved", cls: "bg-emerald-500/10 text-emerald-700 border-emerald-500/30", dot: "bg-emerald-400" },
   rejected: { label: "Rejected", cls: "bg-rose-500/10 text-rose-700 border-rose-500/30", dot: "bg-rose-400" },
-  ok: { label: "Verified", cls: "bg-emerald-500/10 text-emerald-700 border-emerald-500/30", dot: "bg-emerald-400" },
+  ready: { label: "Ready", cls: "bg-emerald-50 text-emerald-700 border-emerald-200", dot: "bg-emerald-500" },
+  provisioning: { label: "Preparing", cls: "bg-violet-50 text-violet-700 border-violet-200", dot: "bg-violet-500 animate-pulse" },
+  new: { label: "Not checked", cls: "bg-slate-50 text-slate-600 border-slate-200", dot: "bg-slate-400" },
+  ok: { label: "Connected", cls: "bg-emerald-500/10 text-emerald-700 border-emerald-500/30", dot: "bg-emerald-400" },
   error: { label: "Error", cls: "bg-rose-500/10 text-rose-700 border-rose-500/30", dot: "bg-rose-400" },
   unverified: { label: "Unverified", cls: "bg-slate-500/10 text-slate-600 border-slate-500/20", dot: "bg-slate-400" },
 };

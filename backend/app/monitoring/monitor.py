@@ -120,11 +120,42 @@ async def run_checks_once() -> int:
     return len(ids)
 
 
+async def check_servers_once() -> int:
+    from ..models import Server
+    from ..servers import ops
+
+    db = SessionLocal()
+    try:
+        servers = [(s.id, s.name, s.status) for s in db.scalars(select(Server).where(Server.status.in_(("ok", "ready", "error"))))]
+    finally:
+        db.close()
+    for sid, name, before in servers:
+        try:
+            m = await ops.refresh_metrics(sid)
+            if before == "error":
+                _notify_server(sid, f"Server {name} is reachable again", "success", "")
+            if m.get("disk_percent", 0) >= 90:
+                _notify_server(sid, f"Server {name} disk almost full", "warning", f"{m['disk_percent']}% used")
+        except Exception as e:  # noqa: BLE001
+            if before != "error":
+                _notify_server(sid, f"Server {name} is unreachable", "error", str(e)[:200])
+    return len(servers)
+
+
+def _notify_server(server_id: str, title: str, level: str, message: str) -> None:
+    db = SessionLocal()
+    try:
+        notify(db, website=None, title=title, message=message, level=level, link="/servers")
+    finally:
+        db.close()
+
+
 async def monitor_loop() -> None:
     await asyncio.sleep(5)
     while True:
         try:
             await run_checks_once()
+            await check_servers_once()
         except Exception:  # noqa: BLE001
             log.exception("Monitor loop error")
         await asyncio.sleep(settings.MONITOR_INTERVAL_SECONDS)

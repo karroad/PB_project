@@ -37,7 +37,7 @@ function NewWebsite() {
   const [cat, setCat] = useState<Catalog | null>(null);
   const [rec, setRec] = useState<any>(null);
   const [thinking, setThinking] = useState(false);
-  const [form, setForm] = useState({ name: "", stack: "" });  // technology is an explicit user choice
+  const [form, setForm] = useState({ name: "", stack: "", reference_url: "" });  // technology is an explicit user choice
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<any>(null);
 
@@ -54,7 +54,7 @@ function NewWebsite() {
   const submit = async () => {
     setBusy(true); setError(null);
     try {
-      const r = await api<{ website: { id: string; name: string } }>("/api/websites", { method: "POST", json: { prompt, stack: form.stack, name: form.name || null } });
+      const r = await api<{ website: { id: string; name: string } }>("/api/websites", { method: "POST", json: { prompt, stack: form.stack, name: form.name || null, reference_url: form.reference_url.trim() || null } });
       toast({ title: "Building your preview", message: r.website.name, level: "info" });
       router.push(`/sites/${r.website.id}`);
     } catch (e: any) { setError(e); setBusy(false); }
@@ -117,9 +117,17 @@ function NewWebsite() {
         </div>
       </section>
 
-      <section className="mt-10 max-w-md">
-        <label className="label" htmlFor="name">Website name (optional)</label>
-        <input id="name" className="input" placeholder={rec?.site_name ?? "AI will name it"} value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
+      <section className="mt-10 grid gap-6 sm:grid-cols-2">
+        <div>
+          <label className="label" htmlFor="name">Website name (optional)</label>
+          <input id="name" className="input" placeholder={rec?.site_name ?? "AI will name it"} value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
+        </div>
+        <div>
+          <label className="label" htmlFor="reference">Reference website (optional)</label>
+          <input id="reference" className="input" placeholder="example.com — we take design & structure ideas" inputMode="url"
+            value={form.reference_url} onChange={(e) => setForm((f) => ({ ...f, reference_url: e.target.value }))} />
+          <p className="mt-1 text-xs text-slate-500">A public site to draw inspiration from — colours, fonts and layout. Its text is never copied.</p>
+        </div>
       </section>
 
       <div className="sticky bottom-4 z-10 mt-8">

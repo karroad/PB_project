@@ -257,7 +257,86 @@ runcmd: [mkdir -p /srv/site, systemctl restart caddy]
         return {"url": url, "artifact_path": str(build_dir), "details": {"mode": "hetzner", "ip": ip}}
 
 
-HOSTING: dict[str, HostingAdapter] = {a.key: a for a in (LocalHosting(), DockerHosting(), HetznerHosting())}
+class ServerHosting(HostingAdapter):
+    """Deploys to one of the user's own servers over SSH (Caddy + automatic HTTPS, atomic releases)."""
+
+    key = "server"
+    name = "Your servers (SSH)"
+    description = "Deploy to a server you manage (Hetzner, OVH, Hostinger VPS…) using your SSH key. Automatic HTTPS, instant rollback."
+    always_provision = True  # make sure the server is prepared before the first deploy
+
+    def _server(self, site):
+        from ...database import SessionLocal
+        from ...models import Server
+
+        if not getattr(site, "server_id", None):
+            raise ConfigurationError("No server selected for this website", hint="Choose one of your servers in the Publish dialog.")
+        db = SessionLocal()
+        try:
+            s = db.get(Server, site.server_id)
+            if s:
+                db.expunge(s)
+            return s
+        finally:
+            db.close()
+
+    def public_url(self, site) -> str:
+        from ...servers.ops import site_host
+
+        server = self._server(site)
+        if not server:
+            return "pending://server"
+        if server.simulated:  # sandbox: browse it through the platform
+            return f"{settings.PUBLIC_BASE_URL.rstrip('/')}/simhost/{server.id}/{site.slug}/"
+        host = site_host(server, site.slug, site.domain)
+        return f"https://{host}/" if site.domain else f"http://{host}/"
+
+    def plan(self, site, spec):
+        server = self._server(site)
+        traefik = bool(server and server.web_server == "traefik")
+        return {"provider": "server", "server": server.name if server else None, "host": server.host if server else None,
+                "isolation": "own read-only container behind the existing Traefik" if traefik else "own release folder + web-server site block",
+                "tls": ("Traefik certificate resolver" if traefik else "Caddy automatic HTTPS") if site.domain else "HTTP (no domain yet)"}
+
+    async def provision(self, site, creds, log):
+        from ...servers import ops
+
+        server = self._server(site)
+        if not server:
+            raise ConfigurationError("The selected server no longer exists", hint="Choose another server in the Publish dialog.")
+        if server.status != "ready":
+            await log(f"Preparing {server.name} (first deploy)")
+            return await ops.provision(server.id, log)
+        await log(f"Server {server.name} is ready")
+        return {"ipv4": "127.0.0.1" if server.simulated else ops.server_ip(server)}
+
+    async def deploy(self, site, build_dir, source_dir, version, creds, infra, log):
+        from ...servers import ops
+
+        server = self._server(site)
+        result = await ops.deploy_site(server.id, site.slug, site.domain, build_dir, version, log)
+        return {"url": self.public_url(site), "artifact_path": result["release"], "details": {"mode": "server", **result}}
+
+    async def activate(self, site, deployment, log=None):
+        from ...servers import ops
+
+        await ops.activate_release(deployment.details["server_id"], site.slug, deployment.details["release"])
+
+    async def restart(self, site, deployment):
+        from ...servers import ops
+
+        return await ops.restart_site(self._server(site).id, site.slug)
+
+    async def verify(self, site, url: str) -> dict:
+        from ...servers import ops
+
+        server = self._server(site)
+        code = await ops.verify_on_server(server.id, ops.site_host(server, site.slug, site.domain))
+        return {"checked": True, "status": 200 if code in (200, 301, 302, 308) else code, "raw_status": code, "via": f"server {server.name}",
+                "https": bool(site.domain)}
+
+
+HOSTING: dict[str, HostingAdapter] = {a.key: a for a in (LocalHosting(), ServerHosting(), DockerHosting(), HetznerHosting())}
 PLANNED_HOSTING = [
     {"key": "ovh", "name": "OVHcloud", "description": "Planned: Public Cloud instances via OVH API", "enabled": False, "disabled_reason": "Planned adapter"},
     {"key": "hostinger", "name": "Hostinger", "description": "Planned: VPS API integration", "enabled": False, "disabled_reason": "Planned adapter"},

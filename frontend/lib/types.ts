@@ -14,6 +14,7 @@ export interface Website {
   live_url: string | null; health_status: Health; last_checked_at: string | null; current_deployment_id: string | null;
   created_at: string; updated_at: string; palette: Palette | null; tagline: string | null; quality_score: number | null; topic: string | null;
   domain_mode?: "buy" | "existing" | null;
+  server_id?: string | null;
   config?: Record<string, any>; env?: Record<string, string>;
 }
 

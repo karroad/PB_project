@@ -14,7 +14,7 @@ def website_out(s: Website, detail: bool = False) -> dict:
     out = {
         "id": s.id, "name": s.name, "slug": s.slug, "prompt": s.prompt, "stack": s.stack, "stack_selected_by": s.stack_selected_by,
         "status": s.status, "domain": s.domain, "hosting_provider": s.hosting_provider, "dns_provider": s.dns_provider,
-        "hosting_account_id": s.hosting_account_id, "dns_account_id": s.dns_account_id, "require_approval": s.require_approval,
+        "hosting_account_id": s.hosting_account_id, "server_id": s.server_id, "dns_account_id": s.dns_account_id, "require_approval": s.require_approval,
         "live_url": s.live_url, "health_status": s.health_status, "last_checked_at": iso(s.last_checked_at),
         "current_deployment_id": s.current_deployment_id, "owner_id": s.owner_id,
         "created_at": iso(s.created_at), "updated_at": iso(s.updated_at),

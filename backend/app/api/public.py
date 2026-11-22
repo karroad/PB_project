@@ -113,6 +113,30 @@ def serve_preview(slug: str, path: str = ""):
     return resp
 
 
+@router.get("/simhost/{server_id}/{slug}/{path:path}")
+def serve_simulated_server(server_id: str, slug: str, path: str = ""):
+    """Sandbox only: serves what was deployed to a simulated server's folder."""
+    from ..servers.connection import sim_root
+    from ..servers.shell import MiniShell
+
+    if not settings.SANDBOX_PROVIDERS or not _SAFE.match(server_id) or not _SAFE.match(slug):
+        raise HTTPException(404)
+    shell = MiniShell(sim_root(server_id))
+    root = shell.resolve_link(f"/srv/siteforge/sites/{slug}/current").resolve()
+    if not root.is_dir():
+        raise HTTPException(404, "Nothing deployed here")
+    target = (root / path).resolve()
+    if not target.is_relative_to(root):
+        raise HTTPException(404)
+    if target.is_dir():
+        if path and not path.endswith("/"):
+            return RedirectResponse(path.rstrip("/").split("/")[-1] + "/", status_code=308)
+        target = target / "index.html"
+    if not target.is_file():
+        raise HTTPException(404)
+    return _with_headers(FileResponse(target), "no-cache")
+
+
 _domain_cache: dict[str, tuple[float, str | None]] = {}
 
 

@@ -3,7 +3,7 @@
 import clsx from "clsx";
 import { AnimatePresence, motion } from "framer-motion";
 import {
-  Activity, Bell, CheckCheck, ClipboardCheck, Cpu, Globe2, KeyRound, LayoutGrid, ListChecks, LogOut, Menu, Plus, ScrollText, Sparkles, Users, X,
+  Activity, Bell, CheckCheck, ClipboardCheck, Cpu, Globe2, KeyRound, Server as ServerIcon, LayoutGrid, ListChecks, LogOut, Menu, Plus, ScrollText, Sparkles, Users, X,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
@@ -19,6 +19,7 @@ const NAV = [
   { href: "/new", label: "Create website", icon: Plus },
   { href: "/jobs", label: "Jobs", icon: ListChecks },
   { href: "/domains", label: "Domains", icon: Globe2 },
+  { href: "/servers", label: "Servers", icon: ServerIcon, role: "operator" as const },
   { href: "/approvals", label: "Approvals", icon: ClipboardCheck },
   { href: "/monitoring", label: "Monitoring", icon: Activity },
   { href: "/providers", label: "Providers", icon: KeyRound, role: "operator" as const },

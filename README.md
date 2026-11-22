@@ -100,6 +100,31 @@ Docker hosting adapter: `docker network create siteforge && docker compose -f in
 - **Notifications.** Users get persistent in-app notifications (bell), live toasts for every completed step, and an optional Slack/Teams/Discord webhook (`NOTIFY_WEBHOOK_URL`). Events covered: job started, approval needed, failure, site live, site down or recovered, auto-restart.
 - **Approval gates.** Hosting provisioning, DNS changes and (optionally) publishing pause the job until a person approves. Infrastructure approvals require an admin.
 
+## Your servers (SSH)
+
+**Servers** in the sidebar manages the machines your websites run on (Hetzner, OVH, Hostinger VPS, any Debian/Ubuntu box):
+
+1. **SSH keys**: paste your existing private key (optionally with passphrase) or generate a new ed25519 key in the app.
+   Private keys are encrypted at rest and never shown again; you get the public key to add to `~/.ssh/authorized_keys`.
+2. **Add server**: IP/hostname, port, user (root or a user with passwordless sudo), key, optional site limit.
+   The connection is tested immediately and the server's host key is **pinned** (a changed key is refused until an admin resets it).
+3. **Prepare server**: installs and configures Caddy (automatic HTTPS) and the site folders. Safe to re-run.
+4. **Publish → Your servers**: the build is uploaded over SFTP into `/srv/siteforge/sites/<slug>/releases/vN`, switched live
+   atomically via a `current` symlink, and checked *on the server itself* (works before DNS propagates). Rollback switches the
+   symlink back; the last 5 releases are kept. Without a domain, sites get a free `http://<slug>.<ip>.sslip.io` address.
+5. Health (CPU, memory, disk) is refreshed by the monitor; you're alerted when a server is unreachable or its disk is almost full.
+
+**Servers that already run other sites (Traefik):** before installing anything, the platform checks who owns ports 80/443.
+If an existing Traefik (in Docker) does, it is reused, and nothing is installed or changed:
+- each website runs as its own small, read-only container `siteforge-<slug>`;
+- the platform detects Traefik's Docker network, HTTPS entrypoint and certificate resolver from Traefik's flags and from the labels of the apps it already routes;
+- detected settings can be corrected under **Servers → Traefik settings**;
+- these servers need a domain per website.
+
+If another web server (nginx, Apache, …) holds the ports, **Prepare** refuses rather than installing a second one next to it.
+
+Only a fixed set of commands is ever sent to servers, with every argument shell-quoted.
+
 ## Requesting changes ("comments")
 
 Open a website → **Changes** tab → describe what to change, e.g.

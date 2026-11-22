@@ -13,8 +13,9 @@ import { Button, ErrorBox } from "./ui";
 export function PublishPanel({ site, onPublished, onCancel }: { site: Website; onPublished: (job: Job) => void; onCancel?: () => void }) {
   const [cat, setCat] = useState<Catalog | null>(null);
   const [accounts, setAccounts] = useState<ProviderAccount[]>([]);
+  const [servers, setServers] = useState<{ id: string; name: string; host: string; status: string; sites: unknown[]; max_sites: number | null; metrics: any; web_server: string | null; web_conflict: boolean }[]>([]);
   const [f, setF] = useState({
-    hosting_provider: site.hosting_provider || "local", hosting_account_id: site.hosting_account_id || "",
+    hosting_provider: site.hosting_provider || "local", hosting_account_id: site.hosting_account_id || "", server_id: site.server_id || "",
     dns_provider: site.dns_provider && site.dns_provider !== "none" ? site.dns_provider : "", dns_account_id: site.dns_account_id || "",
     domain: site.domain || "", domain_mode: (site.domain_mode as "buy" | "existing") || "buy",
   });
@@ -27,6 +28,7 @@ export function PublishPanel({ site, onPublished, onCancel }: { site: Website; o
   useEffect(() => {
     api<Catalog>("/api/catalog").then(setCat).catch(setError);
     api<ProviderAccount[]>("/api/providers").then(setAccounts).catch(() => {});
+    api<typeof servers>("/api/servers").then((s) => { setServers(s); setF((x) => (x.server_id || !s[0] ? x : { ...x, server_id: s.find((v) => v.status !== "error")?.id ?? "" })); }).catch(() => {});
   }, []);
 
   const policy = cat?.policy;
@@ -36,12 +38,15 @@ export function PublishPanel({ site, onPublished, onCancel }: { site: Website; o
   const custom = !!f.dns_provider && f.dns_provider !== "none";
   const buying = custom && f.domain_mode === "buy";
   const quote = search?.results?.find((r) => r.domain === f.domain);
+  const chosenServer = servers.find((s) => s.id === f.server_id);
   const missing = [
     !f.dns_provider && "a domain provider",
     custom && !f.dns_account_id && `a ${dnsInfo?.name ?? ""} account`,
     custom && !f.domain.trim() && (buying ? "a domain to buy (search and pick one)" : "the domain name"),
     buying && policy && !policy.public_server && f.hosting_provider !== "hetzner" && "a public server (set SERVER_PUBLIC_IP or choose Hetzner)",
     hosting?.external && !f.hosting_account_id && `a ${hosting.name} account`,
+    f.hosting_provider === "server" && !f.server_id && "one of your servers (add one under Servers)",
+    f.hosting_provider === "server" && chosenServer?.web_server === "traefik" && !custom && "a domain (this server's Traefik routes websites by domain)",
   ].filter(Boolean) as string[];
 
   const runSearch = async () => {
@@ -59,7 +64,7 @@ export function PublishPanel({ site, onPublished, onCancel }: { site: Website; o
     setBusy(true); setError(null);
     try {
       const job = await api<Job>(`/api/websites/${site.id}/publish`, { method: "POST", json: {
-        hosting_provider: f.hosting_provider, hosting_account_id: f.hosting_account_id || null, dns_provider: f.dns_provider,
+        hosting_provider: f.hosting_provider, hosting_account_id: f.hosting_account_id || null, server_id: f.hosting_provider === "server" ? f.server_id || null : null, dns_provider: f.dns_provider,
         dns_account_id: custom ? f.dns_account_id || null : null, domain: custom ? f.domain.trim() || null : null, domain_mode: custom ? f.domain_mode : null } });
       onPublished(job);
     } catch (e) { setError(e); setBusy(false); }
@@ -74,6 +79,18 @@ export function PublishPanel({ site, onPublished, onCancel }: { site: Website; o
             <Choice key={h.key} active={f.hosting_provider === h.key} onClick={() => set("hosting_provider", h.key)} title={h.name} text={h.description} badge={h.requires_approval ? "approval" : undefined} />
           ))}
         </div>
+        {f.hosting_provider === "server" && (
+          servers.length ? (
+            <select className="input mt-3" value={f.server_id} onChange={(e) => set("server_id", e.target.value)} aria-label="Server">
+              <option value="">Choose a server…</option>
+              {servers.map((s) => (
+                <option key={s.id} value={s.id} disabled={s.status === "error" || s.web_conflict}>
+                  {s.name} · {s.host} · {s.sites.length}{s.max_sites ? `/${s.max_sites}` : ""} sites{s.web_server === "traefik" ? " · via Traefik" : ""}{s.metrics?.disk_percent != null ? ` · disk ${s.metrics.disk_percent}%` : ""}{s.web_conflict ? ` (ports used by ${s.web_server})` : s.status === "error" ? " (unreachable)" : s.status !== "ready" ? " (will be prepared on first publish)" : ""}
+                </option>
+              ))}
+            </select>
+          ) : <p className="mt-3 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2.5 text-xs text-amber-800">No servers yet. <Link href="/servers" className="font-medium underline">Add one under Servers</Link> (your SSH key + IP).</p>
+        )}
         {hosting?.external && (
           <select className="input mt-3" value={f.hosting_account_id} onChange={(e) => set("hosting_account_id", e.target.value)} aria-label="Hosting account">
             <option value="">Select a {hosting.name} account…</option>

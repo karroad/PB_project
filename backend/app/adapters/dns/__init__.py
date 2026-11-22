@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 
 import httpx
 
-from ...errors import ConfigurationError, PipelineError
+from ...errors import ConfigurationError, PipelineError, RetryableError
 
 
 class DomainOrderRejected(PipelineError):
@@ -105,11 +105,38 @@ class CloudflareDNS(DNSAdapter):
             raise ConfigurationError("Cloudflare account has no api_token")
         return {"Authorization": f"Bearer {creds['api_token']}"}
 
-    def _acct(self, creds) -> str:
-        if not creds.get("account_id"):
-            raise ConfigurationError("Cloudflare account_id is required for registrar operations",
-                                     hint="Edit the Cloudflare provider account and add its account ID.")
-        return f"{self.API}/accounts/{creds['account_id']}/registrar"
+    _accounts: dict[str, str] = {}  # sha256(token) -> account id found via the API
+
+    async def _account_id(self, c: httpx.AsyncClient, creds) -> str:
+        """The configured account_id, or - when only a token was given - the single account that token can see."""
+        if creds.get("account_id"):
+            return creds["account_id"]
+        cache_key = hashlib.sha256(str(creds.get("api_token")).encode()).hexdigest()
+        if cache_key in self._accounts:
+            return self._accounts[cache_key]
+        try:
+            r = await c.get(f"{self.API}/accounts", params={"per_page": 50}, headers=self._h(creds))
+            accounts = [{"id": a["id"], "name": a.get("name", a["id"])} for a in ((r.json().get("result") or []) if r.status_code == 200 else [])]
+            if len(accounts) != 1:
+                # DNS-only tokens can't list accounts but can list zones; every zone carries its account id.
+                z = await c.get(f"{self.API}/zones", params={"per_page": 50}, headers=self._h(creds))
+                seen = {zone["account"]["id"]: zone["account"].get("name", zone["account"]["id"])
+                        for zone in ((z.json().get("result") or []) if z.status_code == 200 else []) if zone.get("account", {}).get("id")}
+                found = [{"id": i, "name": n} for i, n in seen.items()]
+                accounts = found if (len(found) == 1 or not accounts) else accounts
+        except httpx.HTTPError as e:
+            raise RetryableError(f"Cloudflare unreachable while looking up the account: {e.__class__.__name__}", code="provider_unreachable")
+        if len(accounts) == 1:
+            self._accounts[cache_key] = accounts[0]["id"]
+            return accounts[0]["id"]
+        raise ConfigurationError(
+            "Cloudflare account_id is required for registrar operations",
+            hint=("This token can see several accounts (" + ", ".join(a["name"] for a in accounts[:5]) + "): add the right account ID."
+                  if accounts else "Add the account ID (Cloudflare dashboard > any domain > Overview > Account ID), "
+                                   "or give the token access to an account's zones or 'Account Settings: Read' so it can be found automatically."))
+
+    async def _acct(self, c: httpx.AsyncClient, creds) -> str:
+        return f"{self.API}/accounts/{await self._account_id(c, creds)}/registrar"
 
     @staticmethod
     def _errors(r: httpx.Response) -> str:
@@ -123,8 +150,14 @@ class CloudflareDNS(DNSAdapter):
         try:
             async with httpx.AsyncClient(timeout=15) as c:
                 r = await c.get(f"{self.API}/user/tokens/verify", headers=self._h(creds))
-            ok = r.status_code == 200 and r.json().get("success")
-            return bool(ok), "Token valid" if ok else f"HTTP {r.status_code}"
+                ok = r.status_code == 200 and r.json().get("success")
+                if not ok:
+                    return False, f"HTTP {r.status_code}"
+                try:
+                    acct = await self._account_id(c, creds)
+                    return True, f"Token valid - account {acct[:6]}…"
+                except ConfigurationError as e:
+                    return True, f"Token valid, but domain buying needs the account ID: {e.hint}"
         except (httpx.HTTPError, ConfigurationError) as e:
             return False, str(e)
 
@@ -132,7 +165,7 @@ class CloudflareDNS(DNSAdapter):
         out = []
         async with httpx.AsyncClient(timeout=30) as c:
             for i in range(0, len(domains), 20):  # API accepts max 20 per call
-                r = await c.post(f"{self._acct(creds)}/domain-check", json={"domains": domains[i:i + 20]}, headers=self._h(creds))
+                r = await c.post(f"{await self._acct(c, creds)}/domain-check", json={"domains": domains[i:i + 20]}, headers=self._h(creds))
                 if r.status_code >= 400:
                     raise PipelineError(f"Cloudflare domain check failed: {self._errors(r)}", code="domain_check_failed")
                 for d in r.json()["result"]["domains"]:
@@ -145,11 +178,12 @@ class CloudflareDNS(DNSAdapter):
 
     async def register_domain(self, creds, domain, years, auto_renew):
         body = {"domain_name": domain, "years": years, "auto_renew": auto_renew, "privacy_mode": "redaction"}
-        try:
-            async with httpx.AsyncClient(timeout=90) as c:
-                r = await c.post(f"{self._acct(creds)}/registrations", json=body, headers=self._h(creds))
-        except httpx.HTTPError as e:
-            raise DomainOrderUncertain(f"Connection lost while registering {domain}: {e.__class__.__name__}")
+        async with httpx.AsyncClient(timeout=90) as c:
+            url = await self._acct(c, creds)  # resolved before ordering: a lookup failure is never an "uncertain" order
+            try:
+                r = await c.post(f"{url}/registrations", json=body, headers=self._h(creds))
+            except httpx.HTTPError as e:
+                raise DomainOrderUncertain(f"Connection lost while registering {domain}: {e.__class__.__name__}")
         if 400 <= r.status_code < 500:
             raise DomainOrderRejected(f"Cloudflare refused the registration: {self._errors(r)}",
                                       hint="Check the account's default payment method and registrant contact in the Cloudflare dashboard.")
@@ -162,14 +196,15 @@ class CloudflareDNS(DNSAdapter):
 
     async def registration_status(self, creds, domain, order_ref):
         async with httpx.AsyncClient(timeout=30) as c:
-            r = await c.get(f"{self._acct(creds)}/registrations/{domain}/registration-status", headers=self._h(creds))
+            base = await self._acct(c, creds)
+            r = await c.get(f"{base}/registrations/{domain}/registration-status", headers=self._h(creds))
             if r.status_code == 404:
                 return {"status": "pending"}
             r.raise_for_status()
             res = r.json().get("result") or {}
             state = res.get("state")
             if state == "succeeded":
-                info = await c.get(f"{self._acct(creds)}/registrations/{domain}", headers=self._h(creds))
+                info = await c.get(f"{base}/registrations/{domain}", headers=self._h(creds))
                 reg = (info.json().get("result") or {}) if info.status_code == 200 else {}
                 return {"status": "active", "expires_at": reg.get("expires_at") or reg.get("expiry_date")}
             if state in ("failed", "cancelled", "error"):
@@ -182,10 +217,12 @@ class CloudflareDNS(DNSAdapter):
         zones = z.json()["result"]
         if zones:
             return zones[0]["id"]
-        if not creds.get("account_id"):
+        try:
+            account = await self._account_id(c, creds)
+        except ConfigurationError:
             raise PipelineError(f"Zone {apex(domain)} not found in this Cloudflare account", code="dns_zone_missing",
                                 hint="Add the domain to Cloudflare, or add the account_id so the zone can be created automatically.")
-        created = await c.post(f"{self.API}/zones", json={"name": apex(domain), "account": {"id": creds["account_id"]}, "type": "full"}, headers=self._h(creds))
+        created = await c.post(f"{self.API}/zones", json={"name": apex(domain), "account": {"id": account}, "type": "full"}, headers=self._h(creds))
         if created.status_code >= 400:
             raise PipelineError(f"Could not create zone {apex(domain)}: {self._errors(created)}", code="dns_zone_missing")
         return created.json()["result"]["id"]

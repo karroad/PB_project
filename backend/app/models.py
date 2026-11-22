@@ -41,6 +41,7 @@ class Website(Base):
     domain: Mapped[str | None] = mapped_column(String(255), nullable=True)
     hosting_provider: Mapped[str] = mapped_column(String(40), default="local")
     hosting_account_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    server_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)  # when hosted on one of your servers
     dns_provider: Mapped[str] = mapped_column(String(40), default="none")
     dns_account_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     require_approval: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -190,6 +191,49 @@ class AuditLog(Base):
     details: Mapped[dict] = mapped_column(JSON, default=dict)
     ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class SSHKey(Base):
+    """An SSH key the platform uses to manage servers. The private key is encrypted and never returned by the API."""
+
+    __tablename__ = "ssh_keys"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(120))
+    public_key: Mapped[str] = mapped_column(Text)
+    fingerprint: Mapped[str] = mapped_column(String(120))
+    key_type: Mapped[str] = mapped_column(String(40), default="ssh-ed25519")
+    private_key_encrypted: Mapped[str] = mapped_column(Text)
+    created_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Server(Base):
+    """A machine the user owns (Hetzner, OVH, Hostinger VPS…) that hosts websites, managed over SSH."""
+
+    __tablename__ = "servers"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(120))
+    provider: Mapped[str] = mapped_column(String(40), default="other")  # hetzner | ovh | hostinger | other
+    host: Mapped[str] = mapped_column(String(255))
+    port: Mapped[int] = mapped_column(Integer, default=22)
+    username: Mapped[str] = mapped_column(String(64), default="root")
+    ssh_key_id: Mapped[str | None] = mapped_column(ForeignKey("ssh_keys.id"), nullable=True)
+    base_dir: Mapped[str] = mapped_column(String(255), default="/srv/siteforge")
+    simulated: Mapped[bool] = mapped_column(Boolean, default=False)  # sandbox: a local folder pretends to be the server
+    status: Mapped[str] = mapped_column(String(20), default="new")  # new | ok | ready | error | provisioning
+    host_key: Mapped[str | None] = mapped_column(Text, nullable=True)  # pinned on first connect (trust on first use)
+    os_info: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    web_server: Mapped[str | None] = mapped_column(String(40), nullable=True)  # caddy | traefik (detected) | other owner of :80/:443
+    # traefik: {"detected": {network, entrypoint, http_entrypoint, certresolver, container}, "overrides": {...}}
+    web_config: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    metrics: Mapped[dict] = mapped_column(JSON, default=dict)
+    max_sites: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class Domain(Base):

@@ -75,8 +75,10 @@ class FakeCloudflare:
         if m == "GET" and p.startswith(f"{self.ACC}/registrations/"):
             return ok({"domain_name": p.rsplit("/", 1)[1], "expires_at": "2027-11-21T00:00:00Z", "auto_renew": True})
         if m == "GET" and p == "/client/v4/zones":
-            name = req.url.params["name"]
-            return ok([{"id": self.zones[name], "name": name}] if name in self.zones else [])
+            name = req.url.params.get("name")
+            if name is None:  # account-id fallback: list all zones, each carrying its account
+                return ok([{"id": zid, "name": n, "account": {"id": "acc-1", "name": "Main"}} for n, zid in self.zones.items()])
+            return ok([{"id": self.zones[name], "name": name, "account": {"id": "acc-1", "name": "Main"}}] if name in self.zones else [])
         if m == "POST" and p == "/client/v4/zones":
             body = json.loads(req.content)
             assert body["account"]["id"] == "acc-1"
@@ -135,7 +137,44 @@ def test_cloudflare_order_failures_are_classified(monkeypatch):
         run(cf.register_domain(CF, "drop.com", 1, True))  # connection lost mid-request
     from app.errors import ConfigurationError
     with pytest.raises(ConfigurationError):
-        run(cf.check_domains({"api_token": "cf-token"}, ["x.com"]))  # account id is required
+        run(cf.check_domains({"api_token": "cf-token"}, ["x.com"]))  # account id is required (token can't list accounts)
+
+
+def test_cloudflare_account_id_found_from_token(monkeypatch):
+    """Only an API token was handed over: the single account the token can see is used."""
+    fake = FakeCloudflare()
+
+    def handler(req):
+        if req.method == "GET" and req.url.path == "/client/v4/accounts":
+            return httpx.Response(200, json={"success": True, "result": [{"id": "acc-1", "name": "Main"}]})
+        return fake(req)
+
+    route(monkeypatch, handler)
+    cf = DNS["cloudflare"]
+    try:
+        assert run(cf.check_domains({"api_token": "cf-token"}, ["candleglow.com"]))[0]["available"] is True
+        assert run(cf.register_domain({"api_token": "cf-token"}, "candleglow.com", 1, True))["status"] == "active"
+        assert "POST /client/v4/accounts/acc-1/registrar/registrations" in fake.calls
+    finally:
+        cf._accounts.clear()
+
+
+def test_cloudflare_account_id_found_from_zones(monkeypatch):
+    """A DNS-only token can't list accounts, but its zones carry the account id (the client's real case)."""
+    fake = FakeCloudflare()
+    fake.zones = {"karroad.com": "zone-karroad"}  # one zone, one account
+
+    def handler(req):
+        if req.method == "GET" and req.url.path == "/client/v4/accounts":
+            return httpx.Response(403, json={"success": False, "errors": [{"message": "insufficient permissions"}], "result": []})
+        return fake(req)
+
+    route(monkeypatch, handler)
+    cf = DNS["cloudflare"]
+    try:
+        assert run(cf.register_domain({"api_token": "cf-token"}, "karroad.com", 1, True))["status"] == "active"
+    finally:
+        cf._accounts.clear()
 
 
 # ======================================================================= OVH

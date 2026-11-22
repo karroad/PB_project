@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .ai.llm import get_provider
-from .api import admin, auth, domains, jobs, public, websites
+from .api import admin, auth, domains, jobs, public, servers, websites
 from .config import settings
 from .errors import PipelineError
 from .events import bus
@@ -54,7 +54,7 @@ async def custom_domain_router(request: Request, call_next):
     """Serve locally hosted sites on their own domains: Host: example.com → /sites/<slug>/..."""
     host = (request.headers.get("host") or "").split(":")[0].lower()
     path = request.scope["path"]
-    if host and host not in _PLATFORM_HOSTS and not path.startswith(("/api/", "/sites/", "/preview/", "/docs", "/openapi")):
+    if host and host not in _PLATFORM_HOSTS and not path.startswith(("/api/", "/sites/", "/preview/", "/simhost/", "/docs", "/openapi")):
         slug = public.slug_for_host(host)
         if slug:
             request.scope["path"] = f"/sites/{slug}{path if path.startswith('/') else '/' + path}"
@@ -89,5 +89,5 @@ async def health():
     return {"ok": True, "ai_provider": get_provider().name, "queue": await queue.stats(), "sandbox": settings.SANDBOX_PROVIDERS}
 
 
-for r in (auth.router, websites.router, domains.router, jobs.router, admin.router, public.router):
+for r in (auth.router, websites.router, domains.router, servers.router, jobs.router, admin.router, public.router):
     app.include_router(r)

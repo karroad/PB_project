@@ -63,11 +63,25 @@ class WebsiteCreate(BaseModel):
     # buy: purchase the domain through the chosen provider's API · existing: a domain already in that account
     domain_mode: Literal["buy", "existing"] | None = None
     require_approval: bool = False
+    # Optional: a public website the generator takes design + structure inspiration from (never copies).
+    reference_url: str | None = Field(default=None, max_length=2000)
 
     @field_validator("domain")
     @classmethod
     def _domain(cls, v: str | None) -> str | None:
         return clean_domain(v)
+
+    @field_validator("reference_url")
+    @classmethod
+    def _reference(cls, v: str | None) -> str | None:
+        if not v or not v.strip():
+            return None
+        v = v.strip()
+        if not v.startswith(("http://", "https://")):
+            v = "https://" + v
+        if len(v) > 2000:
+            raise ValueError("Reference URL is too long")
+        return v
 
 
 class WebsiteUpdate(BaseModel):
@@ -90,6 +104,7 @@ class PublishRequest(BaseModel):
     """Chosen when the user publishes the reviewed preview."""
     hosting_provider: str = "local"
     hosting_account_id: str | None = None
+    server_id: str | None = None  # when hosting_provider == "server"
     dns_provider: str = Field(min_length=1, description="Domain provider chosen by the user: cloudflare | ovh | none (platform URL)")
     dns_account_id: str | None = None
     domain: str | None = None

@@ -75,15 +75,159 @@ class AnthropicProvider(TextProvider):
         return "".join(b.text for b in message.content if b.type == "text")
 
 
+class ClaudeCliProvider(TextProvider):
+    """Drives the Claude Code CLI in headless/print mode, so content runs on the monthly
+    Claude subscription (Pro/Max) instead of a metered API key. Requires the `claude` CLI
+    installed and logged in (OAuth) on the machine the backend runs on (e.g. server 65/116)."""
+
+    name = "claude-cli"
+    offline = False
+
+    async def complete(self, system: str, prompt: str) -> str:
+        args = [settings.CLAUDE_CLI_BIN, "-p", "--output-format", "json", "--append-system-prompt", system]
+        if settings.CLAUDE_CLI_MODEL:
+            args += ["--model", settings.CLAUDE_CLI_MODEL]
+        out = await _run_cli(args, prompt, settings.CLAUDE_CLI_TIMEOUT)
+        try:
+            data = json.loads(out)
+        except json.JSONDecodeError:
+            return out  # some versions print the raw answer when not asked for json
+        if isinstance(data, dict):
+            if data.get("is_error") or (data.get("type") == "result" and data.get("subtype") not in (None, "success")):
+                raise LLMError(f"Claude CLI error: {str(data.get('result') or data.get('subtype'))[:200]}")
+            return data.get("result", "") or ""
+        return out
+
+
+async def _run_cli(args: list[str], stdin: str, timeout: int) -> str:
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *args, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    except FileNotFoundError as e:
+        raise LLMError(f"Claude CLI not found ({args[0]}); install it and `claude login` on this machine") from e
+    try:
+        so, se = await asyncio.wait_for(proc.communicate(stdin.encode()), timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        raise LLMError("Claude CLI timed out")
+    if proc.returncode != 0:
+        raise LLMError(f"Claude CLI failed ({proc.returncode}): {se.decode(errors='ignore')[:300] or so.decode(errors='ignore')[:300]}")
+    return so.decode(errors="ignore").strip()
+
+
 _provider: TextProvider | None = None
 _ai_semaphore = asyncio.Semaphore(settings.AI_MAX_CONCURRENT_REQUESTS)
+
+
+# --------------------------------------------------------------------------- code provider
+class CodeProvider:
+    """Writes the actual site code (HTML/CSS/JS). Separate from the content provider so the client
+    can use a cheaper coding model (z.ai GLM Coding Plan) for the heavy code generation."""
+
+    name = "offline"
+    offline = True
+
+    async def complete(self, system: str, prompt: str) -> str:  # pragma: no cover - interface
+        raise NotImplementedError
+
+
+class OfflineCodeProvider(CodeProvider):
+    name = "offline"
+    offline = True
+
+    async def complete(self, system: str, prompt: str) -> str:
+        return ""
+
+
+class ZaiCodeProvider(CodeProvider):
+    """Calls z.ai's Anthropic-compatible Messages endpoint (the GLM Coding Plan endpoint)."""
+
+    name = "zai"
+    offline = False
+
+    async def complete(self, system: str, prompt: str) -> str:
+        import httpx
+
+        url = settings.ZAI_BASE_URL.rstrip("/") + "/v1/messages"
+        headers = {"Authorization": f"Bearer {settings.ZAI_API_KEY}", "x-api-key": settings.ZAI_API_KEY,
+                   "anthropic-version": "2023-06-01", "content-type": "application/json"}
+        body = {"model": settings.ZAI_MODEL, "max_tokens": settings.CODE_MAX_TOKENS,
+                "system": system, "messages": [{"role": "user", "content": prompt}]}
+        try:
+            async with httpx.AsyncClient(timeout=settings.CODE_TIMEOUT_SECONDS) as c:
+                r = await c.post(url, json=body, headers=headers)
+        except httpx.HTTPError as e:
+            raise LLMError(f"Could not reach the code model (z.ai): {e.__class__.__name__}") from e
+        if r.status_code == 401:
+            raise LLMError("Code model authentication failed — check ZAI_API_KEY")
+        if r.status_code == 429:
+            raise LLMError("Code model rate limited / quota exhausted")
+        if r.status_code >= 400:
+            raise LLMError(f"Code model error {r.status_code}: {r.text[:300]}")
+        data = r.json()
+        if data.get("stop_reason") == "max_tokens":
+            raise LLMError("Code model response was truncated (raise CODE_MAX_TOKENS)")
+        parts = [b.get("text", "") for b in (data.get("content") or []) if b.get("type") == "text"]
+        text = "".join(parts).strip()
+        if not text:
+            raise LLMError("Code model returned no content")
+        return text
+
+
+class AnthropicCodeProvider(CodeProvider):
+    """Stopgap: use the Claude (Anthropic) key to write code too, when z.ai has no balance.
+    Higher cost than the z.ai Coding Plan, but produces the same unique AI-authored sites."""
+
+    name = "anthropic"
+    offline = False
+
+    def __init__(self) -> None:
+        self._p = AnthropicProvider()
+
+    async def complete(self, system: str, prompt: str) -> str:
+        return await self._p.complete(system, prompt)
+
+
+_code_provider: CodeProvider | None = None
+
+
+def get_code_provider() -> CodeProvider:
+    global _code_provider
+    if _code_provider is None:
+        choice = settings.CODE_PROVIDER.lower()
+        if not settings.AI_CODE_GENERATION:
+            _code_provider = OfflineCodeProvider()
+        elif choice == "anthropic" and settings.ANTHROPIC_API_KEY:
+            _code_provider = AnthropicCodeProvider()
+        elif choice == "zai" or (choice == "auto" and settings.ZAI_API_KEY):
+            _code_provider = ZaiCodeProvider() if settings.ZAI_API_KEY else OfflineCodeProvider()
+        else:
+            _code_provider = OfflineCodeProvider()
+    return _code_provider
+
+
+def reset_providers() -> None:
+    """Drop cached providers so a settings change (e.g. CODE_PROVIDER) takes effect."""
+    global _provider, _code_provider
+    _provider = _code_provider = None
+
+
+async def complete_code(system: str, prompt: str) -> str:
+    """Raw completion from the code model (not JSON). Raises LLMError on failure."""
+    provider = get_code_provider()
+    if provider.offline:
+        raise LLMError("No code model configured")
+    async with _ai_semaphore:
+        return await provider.complete(system, prompt)
 
 
 def get_provider() -> TextProvider:
     global _provider
     if _provider is None:
         choice = settings.AI_PROVIDER.lower()
-        if choice == "anthropic" or (choice == "auto" and settings.ANTHROPIC_API_KEY):
+        if choice == "claude_cli":
+            _provider = ClaudeCliProvider()
+        elif choice == "anthropic" or (choice == "auto" and settings.ANTHROPIC_API_KEY):
             try:
                 _provider = AnthropicProvider()
             except Exception as e:  # SDK missing / misconfigured

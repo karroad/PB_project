@@ -28,6 +28,7 @@ class SiteInfo:
     require_approval: bool
     current_deployment_id: str | None
     status: str = "draft"
+    server_id: str | None = None
 
     @property
     def workspace(self) -> Path:

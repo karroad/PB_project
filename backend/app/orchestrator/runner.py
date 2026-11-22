@@ -55,7 +55,7 @@ def _site_info(site: Website) -> SiteInfo:
     return SiteInfo(id=site.id, slug=site.slug, name=site.name, prompt=site.prompt, stack=site.stack, domain=site.domain,
                     hosting_provider=site.hosting_provider, hosting_account_id=site.hosting_account_id, dns_provider=site.dns_provider,
                     dns_account_id=site.dns_account_id, require_approval=site.require_approval, current_deployment_id=site.current_deployment_id,
-                    status=site.status)
+                    status=site.status, server_id=site.server_id)
 
 
 async def run_job(job_id: str, worker_id: str = "embedded") -> None:
