@@ -6,13 +6,14 @@ import { Check, Globe, Rocket, Search, ShoppingCart } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
-import type { Catalog, DomainQuote, Job, ProviderAccount, Website } from "@/lib/types";
+import type { Catalog, DomainQuote, DomainRecord, Job, ProviderAccount, Website } from "@/lib/types";
 import { Button, ErrorBox } from "./ui";
 
 /** Publish step: choose hosting + domain provider (buy a new domain or use one you own), then go live. */
 export function PublishPanel({ site, onPublished, onCancel }: { site: Website; onPublished: (job: Job) => void; onCancel?: () => void }) {
   const [cat, setCat] = useState<Catalog | null>(null);
   const [accounts, setAccounts] = useState<ProviderAccount[]>([]);
+  const [domains, setDomains] = useState<DomainRecord[]>([]);
   const [servers, setServers] = useState<{ id: string; name: string; host: string; status: string; sites: unknown[]; max_sites: number | null; metrics: any; web_server: string | null; web_conflict: boolean }[]>([]);
   const [f, setF] = useState({
     hosting_provider: site.hosting_provider || "local", hosting_account_id: site.hosting_account_id || "", server_id: site.server_id || "",
@@ -28,6 +29,7 @@ export function PublishPanel({ site, onPublished, onCancel }: { site: Website; o
   useEffect(() => {
     api<Catalog>("/api/catalog").then(setCat).catch(setError);
     api<ProviderAccount[]>("/api/providers").then(setAccounts).catch(() => {});
+    api<DomainRecord[]>("/api/domains").then(setDomains).catch(() => {});
     api<typeof servers>("/api/servers").then((s) => { setServers(s); setF((x) => (x.server_id || !s[0] ? x : { ...x, server_id: s.find((v) => v.status !== "error")?.id ?? "" })); }).catch(() => {});
   }, []);
 
@@ -38,6 +40,7 @@ export function PublishPanel({ site, onPublished, onCancel }: { site: Website; o
   const custom = !!f.dns_provider && f.dns_provider !== "none";
   const buying = custom && f.domain_mode === "buy";
   const quote = search?.results?.find((r) => r.domain === f.domain);
+  const ownedDomains = domains.filter((d) => d.status === "active" && d.provider === f.dns_provider && (!d.website_id || d.website_id === site.id));
   const chosenServer = servers.find((s) => s.id === f.server_id);
   const missing = [
     !f.dns_provider && "a domain provider",
@@ -164,7 +167,23 @@ export function PublishPanel({ site, onPublished, onCancel }: { site: Website; o
                   </p>
                 </div>
               ) : (
-                <input className="input mt-3" placeholder="example.com" value={f.domain} onChange={(e) => set("domain", e.target.value)} aria-label="Domain you own" />
+                <div className="mt-3">
+                  {ownedDomains.length > 0 && (
+                    <div className="mb-2">
+                      <p className="mb-1.5 text-xs text-slate-500">Domains you've bought on this platform:</p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {ownedDomains.map((d) => (
+                          <button key={d.id} type="button" onClick={() => set("domain", d.name)} aria-pressed={f.domain === d.name}
+                            className={clsx("flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 font-mono text-xs transition",
+                              f.domain === d.name ? "border-emerald-500 bg-emerald-50 text-emerald-700" : "border-slate-200 bg-white text-slate-700 hover:border-slate-300")}>
+                            {f.domain === d.name && <Check className="h-3 w-3" />}{d.name}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  <input className="input" placeholder="example.com" value={f.domain} onChange={(e) => set("domain", e.target.value)} aria-label="Domain you own" />
+                </div>
               )}
             </motion.div>
           )}

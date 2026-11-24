@@ -123,6 +123,21 @@ class ChangeRequest(BaseModel):
     instruction: str = Field(min_length=3, max_length=2000)
 
 
+class DomainBuyIn(BaseModel):
+    """Buy a domain directly from the Domains page (not tied to a website yet)."""
+    domain: str
+    provider: str
+    account_id: str
+
+    @field_validator("domain")
+    @classmethod
+    def _domain(cls, v: str) -> str:
+        d = clean_domain(v)
+        if not d:
+            raise ValueError("A valid domain name is required")
+        return d
+
+
 class DeleteConfirm(BaseModel):
     confirm: str
 
