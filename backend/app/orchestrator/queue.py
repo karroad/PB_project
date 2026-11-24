@@ -104,13 +104,26 @@ class JobQueue:
         count = 0
         try:
             cutoff = utcnow() - timedelta(seconds=settings.STALE_JOB_SECONDS)
+            processing: set[str] = set()
+            if self.backend == "redis":
+                self._ensure()
+                processing = set(await self._redis.lrange(self.PROCESSING_KEY, 0, -1))
             jobs = db.scalars(select(Job).where(Job.status.in_(("queued", "running")))).all()
             for job in jobs:
                 stale = job.status == "running" and (_aware(job.heartbeat_at) or cutoff) <= cutoff and job.id not in self.running
                 # on single-process startup every 'running' job is orphaned
                 orphan = startup and self.backend == "memory" and job.status == "running"
-                if job.status == "queued" and (startup or self.backend == "memory" and job.id not in self.running):
-                    if startup:
+                # Redis only: BLMOVE already claimed this job into the processing list, but the worker
+                # crashed/restarted (deploy, OOM) before it could mark it 'running' in the DB — it is
+                # lost for good otherwise, since no other check ever revisits a 'queued' job on this
+                # backend. Safe unconditionally: during normal processing the DB flips to 'running'
+                # within the same step, well before the next 60s reaper tick could ever observe this.
+                lost_in_pickup = self.backend == "redis" and job.status == "queued" and job.id in processing
+                if job.status == "queued" and (startup or (self.backend == "memory" and job.id not in self.running) or lost_in_pickup):
+                    if lost_in_pickup:
+                        await self._redis.lrem(self.PROCESSING_KEY, 1, job.id)
+                        log.warning("Recovered job %s lost in pickup (worker crashed before marking it running)", job.id)
+                    if startup or lost_in_pickup:
                         await self.enqueue(job.id)
                         count += 1
                 elif stale or orphan:
