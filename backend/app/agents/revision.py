@@ -251,6 +251,10 @@ class RevisionAgent(Agent):
         changed = diff_paths(before, editable)
         if not changed:
             raise PipelineError("The request didn't change anything", code="revision_no_change", hint="Rephrase the request more specifically.")
+        # SEO metadata (page titles/descriptions/keywords) is assembled locally by the builder from this
+        # field alone — when nothing else changed, the rebuild step can reuse the last AI design/pages
+        # instead of re-prompting the code model for an unrelated text edit.
+        ctx.state["revision_seo_only"] = all(p.startswith("seo.") for p in changed)
 
         # keep SEO in step with renamed brand / new articles
         if editable["brand"]["name"] != before["brand"]["name"] or len(editable["content"]["articles"]) != len(before["content"]["articles"]):

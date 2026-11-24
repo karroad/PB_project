@@ -79,6 +79,30 @@ def test_ai_build_passes_quality_and_repairs_links(tmp_path, monkeypatch):
     assert (build / "sitemap.xml").exists() and (build / "robots.txt").exists()
 
 
+def test_ai_build_reuses_cache_and_skips_model_for_metadata_only_change(tmp_path, monkeypatch):
+    """A revision that only edits SEO metadata must not re-prompt the code model: cache_out from the
+    first build is fed back in as `cache`, and the model must not be called at all the second time."""
+    monkeypatch.setattr(site_builder, "complete_code", _fake_complete)
+    spec, media = _spec(tmp_path)
+
+    async def log(msg, progress=None):
+        pass
+
+    cache_out: dict = {}
+    asyncio.run(site_builder.build_ai_site(spec, tmp_path / "build1", media, "http://preview.local/", "alpine-huts", log, cache_out=cache_out))
+    assert cache_out.get("design") and cache_out.get("bodies")
+
+    async def boom(system, prompt):
+        raise AssertionError("the code model must not be called when reusing the cache")
+    monkeypatch.setattr(site_builder, "complete_code", boom)
+
+    spec["seo"]["pages"][""]["title"] = "A Brand New SEO Title"  # the only thing that changed
+    build2 = tmp_path / "build2"
+    files = asyncio.run(site_builder.build_ai_site(spec, build2, media, "http://preview.local/", "alpine-huts", log, cache=cache_out))
+    assert "index.html" in files
+    assert "A Brand New SEO Title" in (build2 / "index.html").read_text()
+
+
 def test_ai_build_raises_when_design_incomplete(tmp_path, monkeypatch):
     async def bad(system, prompt):
         return "===CSS===\n/* only css, no header/footer */"

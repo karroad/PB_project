@@ -341,11 +341,19 @@ class DevelopmentAgent(Agent):
 
         authored_by = "template"
         code_provider = get_code_provider()
+        # A revision that only touched SEO metadata (this module's own <head>/meta rendering) never needs
+        # the design or page bodies rewritten — reuse the cached ones from the last AI build instead of
+        # re-prompting the code model for an unrelated text tweak.
+        seo_only_revision = ctx.state.pop("revision_seo_only", False)
+        build_cache = ctx.state.get("_ai_build_cache") if seo_only_revision else None
         if not code_provider.offline:
             try:
                 await ctx.log(f"Designing & coding a unique site with {settings.ZAI_MODEL}", progress=25)
-                built = await build_ai_site(spec, build, ctx.site.media_dir, base_url, ctx.site.slug, blog)
+                cache_out: dict = {}
+                built = await build_ai_site(spec, build, ctx.site.media_dir, base_url, ctx.site.slug, blog, cache=build_cache, cache_out=cache_out)
                 authored_by = settings.ZAI_MODEL
+                if cache_out.get("design"):
+                    ctx.state["_ai_build_cache"] = cache_out
             except Exception as e:  # noqa: BLE001 — never fail the build over the code model; fall back to the renderer
                 await ctx.log(f"Code model unavailable ({getattr(e, 'message', e)}); using the built-in renderer", level="warning")
                 built = await adapter.build(spec, source, build, ctx.site.media_dir, base_url, ctx.site.slug, blog)

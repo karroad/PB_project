@@ -252,16 +252,32 @@ SITE_JS = (
 )
 
 
-async def build_ai_site(spec: dict, build_dir: Path, media_dir: Path, base_url: str, slug: str, log) -> list[str]:
+async def build_ai_site(spec: dict, build_dir: Path, media_dir: Path, base_url: str, slug: str, log,
+                         cache: dict | None = None, cache_out: dict | None = None) -> list[str]:
     """Generate the site with the code model. Raises LLMError if the model is unavailable/unusable
-    (the caller then falls back to the deterministic renderer)."""
+    (the caller then falls back to the deterministic renderer).
+
+    `cache` (from a previous build of the same site) lets a metadata-only revision (e.g. editing SEO
+    title/description, which this module owns and assembles locally) skip the two AI calls entirely —
+    the design and every page's body are reused verbatim and only the <head>/meta is re-assembled.
+    The design+bodies actually used (fresh or reused) are written into `cache_out` so the caller can
+    store it for next time."""
     spec["brand"]["_form_action"] = f"{settings.PUBLIC_BASE_URL.rstrip('/')}/api/public/forms/{slug}"
     pages = _page_plan(spec)
     nav = [p for p in pages if p["kind"] in ("home", "about", "services", "shop", "blog", "faq", "contact")]
+    page_keys = [p["key"] for p in pages]
 
-    design = await _design(spec, nav, log)
-    await log(f"Writing {len(pages)} pages with {settings.ZAI_MODEL}", progress=35)
-    bodies = await asyncio.gather(*[_page_html(spec, design, p, spec["brand"]["_form_action"]) for p in pages])
+    reusable = bool(cache) and cache.get("page_keys") == page_keys and cache.get("design") and cache.get("bodies") \
+        and len(cache["bodies"]) == len(pages)
+    if reusable:
+        design, bodies = cache["design"], cache["bodies"]
+        await log("Reusing the existing design and page code (only page metadata changed)", progress=35)
+    else:
+        design = await _design(spec, nav, log)
+        await log(f"Writing {len(pages)} pages with {settings.ZAI_MODEL}", progress=35)
+        bodies = await asyncio.gather(*[_page_html(spec, design, p, spec["brand"]["_form_action"]) for p in pages])
+    if cache_out is not None:
+        cache_out["page_keys"], cache_out["design"], cache_out["bodies"] = page_keys, design, list(bodies)
 
     # planned output set (for link repair)
     base_url = base_url.rstrip("/") + "/"
