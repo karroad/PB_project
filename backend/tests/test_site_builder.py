@@ -98,9 +98,40 @@ def test_ai_build_reuses_cache_and_skips_model_for_metadata_only_change(tmp_path
 
     spec["seo"]["pages"][""]["title"] = "A Brand New SEO Title"  # the only thing that changed
     build2 = tmp_path / "build2"
-    files = asyncio.run(site_builder.build_ai_site(spec, build2, media, "http://preview.local/", "alpine-huts", log, cache=cache_out))
+    files = asyncio.run(site_builder.build_ai_site(spec, build2, media, "http://preview.local/", "alpine-huts", log,
+                                                    cache=cache_out, force_pages=set()))
     assert "index.html" in files
     assert "A Brand New SEO Title" in (build2 / "index.html").read_text()
+
+
+def test_ai_build_partial_rebuild_regenerates_only_named_pages(tmp_path, monkeypatch):
+    """A headline edit (confined to the home page) must re-prompt the model only for 'home' —
+    every other page's body is reused verbatim from the cache."""
+    calls: list[str] = []
+
+    async def fake(system, prompt):
+        if "Design the visual system" in prompt:
+            return DESIGN
+        calls.append(prompt)
+        return _fake_page("Regenerated Home")
+    monkeypatch.setattr(site_builder, "complete_code", fake)
+    spec, media = _spec(tmp_path)
+
+    async def log(msg, progress=None):
+        pass
+
+    cache_out: dict = {}
+    asyncio.run(site_builder.build_ai_site(spec, tmp_path / "build1", media, "http://preview.local/", "alpine-huts", log, cache_out=cache_out))
+    n_pages = len(cache_out["bodies"])
+    calls.clear()
+
+    spec["content"]["home"]["hero_title"] = "A Brand New Headline"  # simulates the Content tab edit
+    build2 = tmp_path / "build2"
+    files = asyncio.run(site_builder.build_ai_site(spec, build2, media, "http://preview.local/", "alpine-huts", log,
+                                                    cache=cache_out, force_pages={""}))
+    assert "Regenerated Home" in (build2 / "index.html").read_text()
+    assert len(calls) == 1  # only the home page was re-prompted, not all n_pages
+    assert n_pages > 1  # sanity: there really were other pages that got reused, not regenerated
 
 
 def test_ai_build_raises_when_design_incomplete(tmp_path, monkeypatch):

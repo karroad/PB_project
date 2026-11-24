@@ -253,13 +253,17 @@ SITE_JS = (
 
 
 async def build_ai_site(spec: dict, build_dir: Path, media_dir: Path, base_url: str, slug: str, log,
-                         cache: dict | None = None, cache_out: dict | None = None) -> list[str]:
+                         cache: dict | None = None, cache_out: dict | None = None, force_pages: set[str] | None = None) -> list[str]:
     """Generate the site with the code model. Raises LLMError if the model is unavailable/unusable
     (the caller then falls back to the deterministic renderer).
 
-    `cache` (from a previous build of the same site) lets a metadata-only revision (e.g. editing SEO
-    title/description, which this module owns and assembles locally) skip the two AI calls entirely —
-    the design and every page's body are reused verbatim and only the <head>/meta is re-assembled.
+    `cache` (the design + every page's body from the previous build of the same site) lets a text-only
+    revision skip re-prompting the model for pages that did not change:
+      - `force_pages=None` (a fresh site, or an edit that could affect anything): full rebuild, as before.
+      - `force_pages=set()` (e.g. only SEO metadata changed, which this module assembles locally into
+        <head> regardless): the design and every page body are reused verbatim — no AI call at all.
+      - `force_pages={"about", ...}` (a plain-text edit confined to specific pages): the design and all
+        OTHER pages' bodies are reused; the model is asked to re-render only the named pages.
     The design+bodies actually used (fresh or reused) are written into `cache_out` so the caller can
     store it for next time."""
     spec["brand"]["_form_action"] = f"{settings.PUBLIC_BASE_URL.rstrip('/')}/api/public/forms/{slug}"
@@ -267,11 +271,20 @@ async def build_ai_site(spec: dict, build_dir: Path, media_dir: Path, base_url: 
     nav = [p for p in pages if p["kind"] in ("home", "about", "services", "shop", "blog", "faq", "contact")]
     page_keys = [p["key"] for p in pages]
 
-    reusable = bool(cache) and cache.get("page_keys") == page_keys and cache.get("design") and cache.get("bodies") \
-        and len(cache["bodies"]) == len(pages)
-    if reusable:
-        design, bodies = cache["design"], cache["bodies"]
+    cached_design = cache.get("design") if cache else None
+    cached_by_key = dict(zip(cache["page_keys"], cache["bodies"])) if cache and cache.get("page_keys") == page_keys and cache.get("bodies") else {}
+    can_reuse = force_pages is not None and cached_design and cached_by_key
+
+    if can_reuse and not force_pages:
+        design, bodies = cached_design, [cached_by_key[k] for k in page_keys]
         await log("Reusing the existing design and page code (only page metadata changed)", progress=35)
+    elif can_reuse:
+        design = cached_design
+        to_regen = [p for p in pages if p["key"] in force_pages or p["key"] not in cached_by_key]
+        await log(f"Updating {len(to_regen)} page(s) with {settings.ZAI_MODEL} (reusing the rest unchanged)", progress=30)
+        regenerated = dict(zip((p["key"] for p in to_regen),
+                               await asyncio.gather(*[_page_html(spec, design, p, spec["brand"]["_form_action"]) for p in to_regen])))
+        bodies = [regenerated.get(p["key"], cached_by_key.get(p["key"])) for p in pages]
     else:
         design = await _design(spec, nav, log)
         await log(f"Writing {len(pages)} pages with {settings.ZAI_MODEL}", progress=35)

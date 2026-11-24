@@ -4,6 +4,8 @@
   shipping, use a darker green") is applied by the model to the site spec.
 * Offline: a built-in interpreter understands common edits (colours, dark/light theme, fonts,
   headline/subtitle/tagline/name/button/email, add/remove FAQ, add/remove article, hide pages).
+* SEO metadata (the SEO tab's Save button): a structured 'SEO <FIELD> for page "<slug>": <value>'
+  line per field, applied deterministically regardless of AI availability — no model call needed.
 
 The edited spec is then rebuilt, re-tested and redeployed as a new version by the normal
 development → testing → deployment → verify steps, so every change can be rolled back.
@@ -32,7 +34,55 @@ SLOT = {"primary": "primary", "main": "primary", "brand": "primary", "accent": "
 DARK = {"background": "#0b1020", "surface": "#131b34", "text": "#e6e9f5", "muted": "#94a3b8"}
 LIGHT = {"background": "#f8fafc", "surface": "#ffffff", "text": "#0f172a", "muted": "#64748b"}
 PAGES = {"about": "about", "services": "services", "offer": "services", "blog": "blog", "journal": "blog", "faq": "faq", "contact": "contact", "shop": "shop"}
-Q = r"[\"“”'‘’](.+?)[\"“”'‘’]"  # quoted text
+Q = r"[\"“”'‘’](.*?)[\"“”'‘’]"  # quoted text — .*? (not .+?) so an empty "" pair matches itself
+# rather than being skipped over, which would otherwise pair with a later, unrelated quote.
+
+# Structured SEO field edits (what the SEO tab's Save button sends): parsed deterministically and
+# unconditionally — never through the free-text AI or the generic setters below — so editing a meta
+# title/description/keywords can never be misread as an edit to the headline, tagline, etc., and never
+# needs an AI call (metadata text is plain strings, there is nothing for a model to usefully add).
+_SEO_LINE = re.compile(r'(?im)^[ \t]*seo[ \t]+(title|description|keywords)[ \t]+for[ \t]+page[ \t]+"([^"]*)"[ \t]*:[ \t]*(.*?)[ \t]*$')
+
+
+def _apply_seo_lines(seo: dict, instruction: str) -> tuple[str, list[str]]:
+    """Applies every 'SEO <FIELD> for page "<slug>": <value>' line directly to seo['pages'][slug],
+    and returns (remaining_instruction_with_those_lines_removed, human-readable summaries)."""
+    done: list[str] = []
+
+    def _take(m: re.Match) -> str:
+        field, slug, value = m.group(1).lower(), m.group(2), m.group(3).strip()
+        page = seo.setdefault("pages", {}).setdefault(slug, {})
+        if field == "keywords":
+            page["keywords"] = [k.strip() for k in value.split(",") if k.strip()]
+            done.append(f"SEO keywords for “{slug or 'Home'}” → {value}")
+        else:
+            page[field] = value
+            done.append(f"SEO {field} for “{slug or 'Home'}” → “{value}”")
+        return ""
+
+    return _SEO_LINE.sub(_take, instruction), done
+
+
+# Content fields that are each confined to exactly one known page's body, so a change to them can
+# be rebuilt by re-rendering only that page instead of the whole site. Anything else (brand, palette,
+# fonts, plan/sitemap, articles, products, images) can ripple into the shared design or several pages,
+# so it is deliberately left out — those fall back to a full, safe rebuild.
+_SAFE_CONTENT_PAGE = {"content.home": "", "content.about": "about", "content.services": "services",
+                      "content.contact": "contact", "content.faq": "faq"}
+
+
+def _affected_pages(changed: list[str]) -> list[str] | None:
+    """Which page(s) need their body re-rendered for this diff, or None if the rest of the
+    rebuild can't safely be skipped (an unrecognised/structural field changed)."""
+    pages: set[str] = set()
+    for p in changed:
+        if p.startswith("seo."):
+            continue  # SEO metadata is assembled locally at render time, never needs a body re-render
+        hit = next((key for prefix, key in _SAFE_CONTENT_PAGE.items() if p == prefix or p.startswith(prefix + ".")), None)
+        if hit is None:
+            return None
+        pages.add(hit)
+    return sorted(pages)
 
 EXAMPLES = [
     'Change the headline to "Live lighter, waste less"',
@@ -124,7 +174,7 @@ class Interpreter:
             self.done.append(f"Font for {target} → {font}"); return True
 
         setters = [
-            (r"\b(?:hero title|headline|main heading|hero heading|title)\b", "content.home.hero_title", "Headline"),
+            (r"\b(?:hero title|headline|main heading|hero heading)\b", "content.home.hero_title", "Headline"),  # bare "title" excluded: too easily confused with an SEO/meta title edit
             (r"\b(?:subtitle|subheading|sub-heading|hero text|intro text)\b", "content.home.hero_subtitle", "Subtitle"),
             (r"\btagline|slogan\b", "brand.tagline", "Tagline"),
             (r"\b(?:button|call to action|cta)\b", "content.home.cta_primary", "Main button"),
@@ -213,15 +263,22 @@ class RevisionAgent(Agent):
         editable = {k: copy.deepcopy(ctx.state[k]) for k in ("brand", "content", "seo", "plan") if k in ctx.state}
         before = copy.deepcopy(editable)
 
-        if ctx.offline:
+        # Structured SEO field edits are deterministic and need no AI — apply them first, unconditionally,
+        # and only send whatever text is left (if any) through the offline interpreter / AI below.
+        remaining, summary_lines = _apply_seo_lines(editable.setdefault("seo", {}), instruction)
+        remaining = remaining.strip()
+
+        if not remaining:
+            pass  # the whole instruction was structured SEO edits — nothing else to interpret
+        elif ctx.offline:
             interp = Interpreter(editable)
-            unknown = interp.apply(instruction)
-            if not interp.done:
+            unknown = interp.apply(remaining)
+            if not interp.done and not summary_lines:
                 raise PipelineError("Couldn't understand this change without an AI provider", code="revision_not_understood",
                                     hint="Add ANTHROPIC_API_KEY for free-form changes, or use a supported format, e.g. " + " · ".join(EXAMPLES[:4]))
             for u in unknown:
                 await ctx.log(f"Skipped (not understood offline): “{u[:120]}”", level="warning")
-            summary_lines = interp.done
+            summary_lines += interp.done
         else:
             await ctx.log("Asking the AI to apply the change", progress=30)
             result = await ctx.ai_json(
@@ -229,9 +286,9 @@ class RevisionAgent(Agent):
                 "Apply the user's change request to this website spec. Change ONLY what the request asks for and keep "
                 "everything else identical. Keep the same JSON structure, keys and types. New articles need a unique slug, "
                 "title, category, excerpt, 5-paragraph body and read_minutes. Also return 'summary': a list of short "
-                "human-readable descriptions of what you changed.\n\nChange request: " + instruction,
+                "human-readable descriptions of what you changed.\n\nChange request: " + remaining,
                 {**editable, "summary": ["…"]}, limit=250_000)  # the editor must see the whole site
-            summary_lines = [s for s in result.pop("summary", []) if isinstance(s, str) and s != "…"]
+            summary_lines += [s for s in result.pop("summary", []) if isinstance(s, str) and s != "…"]
             for k in editable:
                 editable[k] = result.get(k, editable[k])
             for a in editable["content"].get("articles", []):
@@ -251,10 +308,12 @@ class RevisionAgent(Agent):
         changed = diff_paths(before, editable)
         if not changed:
             raise PipelineError("The request didn't change anything", code="revision_no_change", hint="Rephrase the request more specifically.")
-        # SEO metadata (page titles/descriptions/keywords) is assembled locally by the builder from this
-        # field alone — when nothing else changed, the rebuild step can reuse the last AI design/pages
-        # instead of re-prompting the code model for an unrelated text edit.
-        ctx.state["revision_seo_only"] = all(p.startswith("seo.") for p in changed)
+        # Tell the rebuild step exactly which page(s) actually need their body re-rendered by the code
+        # model — a plain text edit (headline, subtitle, tagline button, contact info, FAQ, SEO meta)
+        # only ever affects one known page (or none, for SEO), so there is no need to re-prompt the
+        # model for every other page's unchanged code. None means "can't tell, rebuild everything"
+        # (e.g. a new article, a design/colour/font change, or an AI-driven free-form edit).
+        ctx.state["revision_affected_pages"] = _affected_pages(changed)
 
         # keep SEO in step with renamed brand / new articles
         if editable["brand"]["name"] != before["brand"]["name"] or len(editable["content"]["articles"]) != len(before["content"]["articles"]):

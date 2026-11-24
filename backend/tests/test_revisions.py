@@ -3,7 +3,7 @@ import json
 
 from fastapi.testclient import TestClient
 
-from app.agents.revision import Interpreter, diff_paths
+from app.agents.revision import Interpreter, _affected_pages, _apply_seo_lines, diff_paths
 from app.ai import llm
 from app.main import app
 from tests.conftest import login, make_live, publish, wait_job
@@ -97,6 +97,52 @@ def test_ai_change_request(asgi_http, monkeypatch):
         assert cfg["brand"]["tagline"] == "Friendly help for busy beekeepers."
         assert cfg["revisions"][-1]["summary"] == ["Friendlier tagline", "Added a FAQ about honey yield"]
         assert "brand.tagline" in cfg["revisions"][-1]["changed"]
+
+
+def test_seo_structured_edit_end_to_end(asgi_http):
+    """Regression test: editing an SEO field must update ONLY seo.pages, never misfire into the
+    headline/tagline/etc — and must be recognised as not needing any page re-coded."""
+    with TestClient(app) as client:
+        h = login(client)
+        site = _live_site(client, h, "A website about backyard beekeeping")
+        before = client.get(f"/api/websites/{site['id']}", headers=h).json()["website"]["config"]
+        original_hero = before["content"]["home"]["hero_title"]
+
+        instruction = 'SEO title for page "": Bee Calm — Backyard Beekeeping Made Simple'
+        r = client.post(f"/api/websites/{site['id']}/changes", headers=h, json={"instruction": instruction})
+        assert r.status_code == 200, r.text
+        j = wait_job(client, h, r.json()["id"], statuses=("completed", "failed"))
+        assert j["status"] == "completed", [(s["key"], s["error"]) for s in j["steps"]]
+
+        cfg = client.get(f"/api/websites/{site['id']}", headers=h).json()["website"]["config"]
+        assert cfg["seo"]["pages"][""]["title"] == "Bee Calm — Backyard Beekeeping Made Simple"
+        assert cfg["content"]["home"]["hero_title"] == original_hero  # untouched — this is the bug that was fixed
+        assert cfg["revisions"][-1]["changed"] == ["seo.pages..title"]
+
+
+def test_apply_seo_lines_handles_empty_page_key_and_multiline_values():
+    seo = {"pages": {}}
+    remaining, done = _apply_seo_lines(seo, 'SEO title for page "": New Title\nSEO description for page "about": A longer description. With two sentences.')
+    assert remaining.strip() == ""
+    assert seo["pages"][""]["title"] == "New Title"
+    assert seo["pages"]["about"]["description"] == "A longer description. With two sentences."
+    assert len(done) == 2
+
+
+def test_quoted_text_regex_matches_empty_string_not_later_text():
+    """The old `.+?` quantifier required at least one char, so an empty "" pair was skipped and
+    paired with a later, unrelated quote instead — this is the exact bug that corrupted a field."""
+    from app.agents.revision import Q
+    import re
+    m = re.search(Q, 'pages[""].title to "Some Real Value"')
+    assert m.group(1) == ""  # the adjacent empty quotes, not "].title to "
+
+
+def test_affected_pages_scoping():
+    assert _affected_pages(["seo.pages..title"]) == []
+    assert _affected_pages(["content.home.hero_title", "content.contact.email"]) == ["", "contact"]
+    assert _affected_pages(["content.articles"]) is None  # new/changed article: unsafe, full rebuild
+    assert _affected_pages(["brand.palette.primary"]) is None  # design change: unsafe, full rebuild
 
 
 def test_interpreter_units():

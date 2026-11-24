@@ -382,13 +382,18 @@ function SeoEditor({ site, disabled, onStarted }: { site: Website; disabled: boo
     catch (e) { setErr(e); } finally { setBusy(false); }
   };
 
+  // The backend parses one structured edit per line — a literal newline in a textarea value (e.g. the
+  // description) would otherwise truncate it, so any line breaks are collapsed to a single space first.
+  const oneLine = (s: string) => s.replace(/\s*\n+\s*/g, " ").trim();
   const saveAll = () => {
     const lines: string[] = [];
     pageList.forEach((p) => {
       const b = base(p.key), v = vals[p.key];
-      if (v.title !== b.title) lines.push(`Set seo.pages["${p.key}"].title to ${quo(v.title)}`);
-      if (v.description !== b.description) lines.push(`Set seo.pages["${p.key}"].description to ${quo(v.description)}`);
-      if (v.keywords !== b.keywords) lines.push(`Set seo.pages["${p.key}"].keywords to [${v.keywords.split(",").map((k) => quo(k.trim())).join(", ")}]`);
+      // One structured line per field — parsed deterministically on the backend (no AI call, no
+      // ambiguity with other edit types), matching exactly what the Revision agent expects.
+      if (v.title !== b.title) lines.push(`SEO title for page "${p.key}": ${oneLine(v.title)}`);
+      if (v.description !== b.description) lines.push(`SEO description for page "${p.key}": ${oneLine(v.description)}`);
+      if (v.keywords !== b.keywords) lines.push(`SEO keywords for page "${p.key}": ${oneLine(v.keywords)}`);
     });
     if (lines.length) run(lines.join("\n"));
   };

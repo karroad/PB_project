@@ -341,16 +341,20 @@ class DevelopmentAgent(Agent):
 
         authored_by = "template"
         code_provider = get_code_provider()
-        # A revision that only touched SEO metadata (this module's own <head>/meta rendering) never needs
-        # the design or page bodies rewritten — reuse the cached ones from the last AI build instead of
-        # re-prompting the code model for an unrelated text tweak.
-        seo_only_revision = ctx.state.pop("revision_seo_only", False)
-        build_cache = ctx.state.get("_ai_build_cache") if seo_only_revision else None
+        # A revision confined to known, page-scoped text fields (headline, subtitle, tagline button,
+        # contact info, FAQ, SEO meta) never needs the whole site re-coded — only the affected page(s),
+        # reusing the cached design and every other page's body from the last AI build. `None` here
+        # (a fresh site, or an edit that could affect the design or several pages) means a full rebuild,
+        # exactly as before.
+        affected_pages = ctx.state.pop("revision_affected_pages", None)
+        force_pages = set(affected_pages) if isinstance(affected_pages, list) else None
+        build_cache = ctx.state.get("_ai_build_cache") if force_pages is not None else None
         if not code_provider.offline:
             try:
                 await ctx.log(f"Designing & coding a unique site with {settings.ZAI_MODEL}", progress=25)
                 cache_out: dict = {}
-                built = await build_ai_site(spec, build, ctx.site.media_dir, base_url, ctx.site.slug, blog, cache=build_cache, cache_out=cache_out)
+                built = await build_ai_site(spec, build, ctx.site.media_dir, base_url, ctx.site.slug, blog,
+                                            cache=build_cache, cache_out=cache_out, force_pages=force_pages)
                 authored_by = settings.ZAI_MODEL
                 if cache_out.get("design"):
                     ctx.state["_ai_build_cache"] = cache_out
