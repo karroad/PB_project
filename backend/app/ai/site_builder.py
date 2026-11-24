@@ -176,12 +176,24 @@ def _meta(spec: dict, key: str) -> dict:
     return m
 
 
+def _fonts_tag(fonts: str) -> str:
+    """Normalise the model's FONTS block so it never leaks into the page as visible text.
+    Accepts a proper <link> tag or a bare Google Fonts URL; returns clean <link> tag(s) or ''."""
+    fonts = (fonts or "").strip()
+    if not fonts:
+        return ""
+    if "<link" in fonts.lower():  # keep only real <link> tags, drop any stray text around them
+        return "\n".join(re.findall(r"<link\b[^>]*>", fonts, re.I))
+    urls = re.findall(r"https?://fonts\.googleapis\.com/[^\s\"'<>]+", fonts)  # bare URL(s) -> build the tag
+    return "\n".join(f'<link rel="stylesheet" href="{u}">' for u in dict.fromkeys(urls))
+
+
 def _document(spec: dict, design: dict, root: str, meta: dict, main_html: str, extra_ld: str = "") -> str:
     brand = spec["brand"]
     lang = spec["requirements"].get("language", "en")
     header = _subst(design["header"], root, brand)
     footer = _subst(design["footer"], root, brand)
-    fonts = _subst(design.get("fonts", ""), root, brand).strip()
+    fonts = _fonts_tag(_subst(design.get("fonts", ""), root, brand))
     org_ld = json.dumps(spec.get("seo", {}).get("organization", {}), ensure_ascii=False)
     kw = ", ".join(meta.get("keywords", []) or [])
     body_class = (design.get("bodyclass") or "").strip()

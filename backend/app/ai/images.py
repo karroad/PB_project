@@ -17,12 +17,20 @@ def fal_key(override: str | None = None) -> str:
     return override or settings.FAL_KEY
 
 
+# Client requirement: generated imagery must never contain people.
+_NO_PEOPLE = ("show only places, objects, materials, architecture, interiors, tools or nature — "
+              "absolutely no people, no humans, no person, no faces, no hands, no crowds, no portraits")
+_NEG_PEOPLE = "person, people, human, man, woman, child, face, faces, hands, crowd, portrait, figure"
+
+
 async def fal_generate(prompt: str, dest: Path, key: str, size: str = "landscape_16_9") -> Path:
+    full_prompt = f"{prompt}. {_NO_PEOPLE}."
     async with httpx.AsyncClient(timeout=120) as client:
         resp = await client.post(
             f"https://fal.run/{settings.FAL_MODEL}",
             headers={"Authorization": f"Key {key}", "Content-Type": "application/json"},
-            json={"prompt": prompt, "image_size": size, "num_images": 1, "enable_safety_checker": True},
+            json={"prompt": full_prompt, "negative_prompt": _NEG_PEOPLE, "image_size": size,
+                  "num_images": 1, "enable_safety_checker": True},
         )
         resp.raise_for_status()
         url = resp.json()["images"][0]["url"]
