@@ -3,7 +3,7 @@
 import clsx from "clsx";
 import { motion } from "framer-motion";
 import {
-  Archive, ArrowLeft, Code2, ExternalLink, Eye, FileText, Gauge, History, Inbox, LayoutTemplate, MessageSquareText, Monitor, Palette, Power, RefreshCw, Rocket, RotateCcw, Send, Settings, Smartphone, Tablet, Trash2, Workflow,
+  Archive, ArrowLeft, Code2, ExternalLink, Eye, FileText, Gauge, History, Inbox, LayoutTemplate, MessageSquareText, Monitor, Palette, Power, RefreshCw, Rocket, RotateCcw, Search, Send, Settings, Smartphone, Tablet, Trash2, Workflow,
 } from "lucide-react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
@@ -22,6 +22,7 @@ const TABS = [
   { key: "pipeline", label: "Pipeline", icon: Workflow }, { key: "preview", label: "Preview", icon: Eye },
   { key: "changes", label: "Changes", icon: MessageSquareText },
   { key: "brand", label: "Brand & plan", icon: Palette }, { key: "content", label: "Content", icon: FileText },
+  { key: "seo", label: "SEO", icon: Search },
   { key: "quality", label: "Quality", icon: Gauge }, { key: "deployments", label: "Deployments", icon: History },
   { key: "code", label: "Code", icon: Code2 }, { key: "monitoring", label: "Health", icon: Power },
   { key: "submissions", label: "Leads", icon: Inbox }, { key: "settings", label: "Settings", icon: Settings },
@@ -117,6 +118,7 @@ export default function SitePage() {
         {tab === "changes" && <Changes site={site} disabled={blocked} onStarted={(j) => startJob(j, "Applying your changes to the preview")} />}
         {tab === "brand" && <Brand site={site} disabled={blocked} onStarted={(j) => startJob(j, "Applying your changes to the preview")} />}
         {tab === "content" && <Content site={site} disabled={blocked} onStarted={(j) => startJob(j, "Applying your changes to the preview")} />}
+        {tab === "seo" && <SeoEditor site={site} disabled={blocked} onStarted={(j) => startJob(j, "Applying your changes to the preview")} />}
         {tab === "quality" && <Quality site={site} />}
         {tab === "deployments" && <Deployments site={site} onChange={load} />}
         {tab === "code" && <CodeView site={site} />}
@@ -352,6 +354,85 @@ function Content({ site, disabled, onStarted }: { site: Website; disabled: boole
         ))}
       </div>
       <Card><h3 className="mb-3 font-display font-semibold">FAQ</h3>{c.faq.map((f: any) => <details key={f.q} className="border-b border-slate-200 py-2"><summary className="cursor-pointer text-sm text-slate-900">{f.q}</summary><p className="mt-1 text-sm text-slate-500">{f.a}</p></details>)}</Card>
+    </div>
+  );
+}
+
+function SeoEditor({ site, disabled, onStarted }: { site: Website; disabled: boolean; onStarted: (j: Job) => void }) {
+  const c = site.config ?? {};
+  const seoPages: Record<string, { title?: string; description?: string; keywords?: string[] }> = c.seo?.pages ?? {};
+  const canPreview = !!site.config?.preview;
+  if (!c.seo) return <Empty icon={Search} title="SEO not generated yet" />;
+
+  const pageList: { key: string; label: string }[] = [
+    ...(c.plan?.sitemap ?? []).map((p: any) => ({ key: p.slug ?? "", label: p.slug ? p.title : "Home" })),
+    ...(c.content?.articles ?? []).map((a: any) => ({ key: `blog/${a.slug}`, label: `Blog: ${a.title}` })),
+  ];
+  const base = (key: string) => ({ title: seoPages[key]?.title ?? "", description: seoPages[key]?.description ?? "", keywords: (seoPages[key]?.keywords ?? []).join(", ") });
+  const [vals, setVals] = useState<Record<string, { title: string; description: string; keywords: string }>>(
+    () => Object.fromEntries(pageList.map((p) => [p.key, base(p.key)])));
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<any>(null);
+  const set = (key: string, field: "title" | "description" | "keywords", v: string) => setVals((x) => ({ ...x, [key]: { ...x[key], [field]: v } }));
+  const dirty = pageList.some((p) => JSON.stringify(vals[p.key]) !== JSON.stringify(base(p.key)));
+
+  const run = async (instruction: string) => {
+    setBusy(true); setErr(null);
+    try { const j = await applyEdit(site.id, instruction); onStarted(j); }
+    catch (e) { setErr(e); } finally { setBusy(false); }
+  };
+
+  const saveAll = () => {
+    const lines: string[] = [];
+    pageList.forEach((p) => {
+      const b = base(p.key), v = vals[p.key];
+      if (v.title !== b.title) lines.push(`Set seo.pages["${p.key}"].title to ${quo(v.title)}`);
+      if (v.description !== b.description) lines.push(`Set seo.pages["${p.key}"].description to ${quo(v.description)}`);
+      if (v.keywords !== b.keywords) lines.push(`Set seo.pages["${p.key}"].keywords to [${v.keywords.split(",").map((k) => quo(k.trim())).join(", ")}]`);
+    });
+    if (lines.length) run(lines.join("\n"));
+  };
+  const optimizeAll = () => run(
+    "Rewrite the SEO title, description and keywords for every page in seo.pages to optimise for search engines: titles under 60 " +
+    "characters, descriptions under 155 characters, accurate, specific and compelling, each with relevant keywords. Keep every other field identical.");
+  const optimizeOne = (key: string, label: string) => run(
+    `Rewrite the SEO title, description and keywords for the page "${label}" (seo.pages["${key}"]) to optimise it for search engines: ` +
+    "title under 60 characters, description under 155 characters, accurate and compelling, relevant keywords. Keep every other field identical.");
+
+  return (
+    <div className="space-y-5">
+      <Card>
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h3 className="font-display font-semibold">Search engine optimisation</h3>
+            <p className="mt-1 text-sm text-slate-500">Edit each page's meta title, description and keywords directly, or let Claude optimise them for you.</p>
+          </div>
+          {canPreview && <Button variant="ghost" onClick={optimizeAll} loading={busy} disabled={disabled}>✨ Optimise all with Claude</Button>}
+        </div>
+        {!canPreview ? <p className="text-sm text-slate-500">Available once the first preview is ready.</p> : (
+          <div className="space-y-4">
+            {pageList.map((p) => (
+              <div key={p.key} className="rounded-xl border border-slate-200 p-4">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <p className="font-medium text-slate-900">{p.label}</p>
+                  <button type="button" disabled={disabled || busy} onClick={() => optimizeOne(p.key, p.label)}
+                    className="shrink-0 rounded-lg border border-violet-200 bg-violet-50 px-2.5 py-1.5 text-xs font-medium text-violet-700 hover:bg-violet-100 disabled:opacity-40">✨ Optimise</button>
+                </div>
+                <div className="grid gap-3">
+                  <div><label className="label">Meta title <span className="text-slate-400">({(vals[p.key]?.title ?? "").length}/60)</span></label>
+                    <input className="input" value={vals[p.key]?.title ?? ""} onChange={(e) => set(p.key, "title", e.target.value)} /></div>
+                  <div><label className="label">Meta description <span className="text-slate-400">({(vals[p.key]?.description ?? "").length}/155)</span></label>
+                    <textarea rows={2} className="input" value={vals[p.key]?.description ?? ""} onChange={(e) => set(p.key, "description", e.target.value)} /></div>
+                  <div><label className="label">Keywords (comma-separated)</label>
+                    <input className="input" value={vals[p.key]?.keywords ?? ""} onChange={(e) => set(p.key, "keywords", e.target.value)} /></div>
+                </div>
+              </div>
+            ))}
+            <div className="mt-2"><ErrorBox error={err} /></div>
+            <div className="flex justify-end"><Button onClick={saveAll} loading={busy} disabled={disabled || !dirty}><Send className="h-4 w-4" /> Save SEO to preview</Button></div>
+          </div>
+        )}
+      </Card>
     </div>
   );
 }
