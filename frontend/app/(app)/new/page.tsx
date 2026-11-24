@@ -37,7 +37,7 @@ function NewWebsite() {
   const [cat, setCat] = useState<Catalog | null>(null);
   const [rec, setRec] = useState<any>(null);
   const [thinking, setThinking] = useState(false);
-  const [form, setForm] = useState({ name: "", stack: "", reference_url: "" });  // technology is an explicit user choice
+  const [form, setForm] = useState({ name: "", stack: "", reference_url: "", contact_phone: "", contact_email: "" });  // technology is an explicit user choice
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<any>(null);
 
@@ -54,7 +54,7 @@ function NewWebsite() {
   const submit = async () => {
     setBusy(true); setError(null);
     try {
-      const r = await api<{ website: { id: string; name: string } }>("/api/websites", { method: "POST", json: { prompt, stack: form.stack, name: form.name || null, reference_url: form.reference_url.trim() || null } });
+      const r = await api<{ website: { id: string; name: string } }>("/api/websites", { method: "POST", json: { prompt, stack: form.stack, name: form.name || null, reference_url: form.reference_url.trim() || null, contact_phone: form.contact_phone.trim() || null, contact_email: form.contact_email.trim() || null } });
       toast({ title: "Building your preview", message: r.website.name, level: "info" });
       router.push(`/sites/${r.website.id}`);
     } catch (e: any) { setError(e); setBusy(false); }
@@ -127,6 +127,17 @@ function NewWebsite() {
           <input id="reference" className="input" placeholder="example.com — we take design & structure ideas" inputMode="url"
             value={form.reference_url} onChange={(e) => setForm((f) => ({ ...f, reference_url: e.target.value }))} />
           <p className="mt-1 text-xs text-slate-500">A public site to draw inspiration from — colours, fonts and layout. Its text is never copied.</p>
+        </div>
+        <div>
+          <label className="label" htmlFor="contact_phone">Contact phone (optional)</label>
+          <input id="contact_phone" className="input" placeholder="+33 4 94 00 00 00" inputMode="tel"
+            value={form.contact_phone} onChange={(e) => setForm((f) => ({ ...f, contact_phone: e.target.value }))} />
+        </div>
+        <div>
+          <label className="label" htmlFor="contact_email">Contact email (optional)</label>
+          <input id="contact_email" className="input" placeholder="contact@yourbusiness.fr" inputMode="email"
+            value={form.contact_email} onChange={(e) => setForm((f) => ({ ...f, contact_email: e.target.value }))} />
+          <p className="mt-1 text-xs text-slate-500">Shown on the site exactly as entered (contact page), as clickable phone & email links.</p>
         </div>
       </section>
 

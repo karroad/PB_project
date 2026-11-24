@@ -161,7 +161,9 @@ async def _page_html(spec: dict, design: dict, page: dict, form_action: str) -> 
     )
     if page["kind"] == "contact":
         rules += ('- Include a working contact form: <form method="post" action="{{FORM_ACTION}}"> with name, email and '
-                  'message fields (each with a <label>) and a submit button.\n')
+                  'message fields (each with a <label>) and a submit button.\n'
+                  '- If content.contact has an email or phone, display them clearly as clickable links '
+                  '(mailto: and tel:). Use the exact values given; do not invent contact details.\n')
     prompt = rules + "\nContent & design context:\n" + json.dumps(guide, ensure_ascii=False)
     raw = await complete_code(SYSTEM, prompt)
     return _main_inner(raw)
@@ -293,6 +295,16 @@ async def build_ai_site(spec: dict, build_dir: Path, media_dir: Path, base_url: 
             main_html += (f'\n<form method="post" action="{spec["brand"]["_form_action"]}" class="contact-form">\n'
                           '<label>Name<input name="name" required></label>\n<label>Email<input type="email" name="email" required></label>\n'
                           '<label>Message<textarea name="message" required></textarea></label>\n<button type="submit">Send</button>\n</form>')
+        if page["kind"] == "contact":  # guarantee user-provided contact details appear
+            cd = spec["content"].get("contact", {})
+            details = []
+            if cd.get("email") and _esc(cd["email"]) not in main_html:
+                details.append(f'<p class="contact-email">Email: <a href="mailto:{_esc(cd["email"])}">{_esc(cd["email"])}</a></p>')
+            if cd.get("phone") and _esc(cd["phone"]) not in main_html:
+                tel = re.sub(r"[^0-9+]", "", cd["phone"])
+                details.append(f'<p class="contact-phone">Phone: <a href="tel:{tel}">{_esc(cd["phone"])}</a></p>')
+            if details:
+                main_html += '\n<div class="contact-details">\n' + "\n".join(details) + "\n</div>"
         extra_ld = ""
         if page["kind"] == "faq":
             extra_ld = json.dumps({"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [

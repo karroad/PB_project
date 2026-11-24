@@ -147,7 +147,9 @@ async def create_website(body: WebsiteCreate, request: Request, db: Session = De
                    hosting_provider=body.hosting_provider, hosting_account_id=body.hosting_account_id, dns_provider=body.dns_provider,
                    dns_account_id=body.dns_account_id, owner_id=user.id,
                    config={"name_from_ai": not body.name, "domain_mode": mode,
-                           **({"reference_url": body.reference_url} if body.reference_url else {})}, status="draft")
+                           **({"reference_url": body.reference_url} if body.reference_url else {}),
+                           **({"contact_phone": body.contact_phone.strip()} if body.contact_phone else {}),
+                           **({"contact_email": body.contact_email.strip()} if body.contact_email else {})}, status="draft")
     db.add(site)
     db.commit()
     try:

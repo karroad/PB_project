@@ -65,6 +65,9 @@ class WebsiteCreate(BaseModel):
     require_approval: bool = False
     # Optional: a public website the generator takes design + structure inspiration from (never copies).
     reference_url: str | None = Field(default=None, max_length=2000)
+    # Optional contact details placed on the site verbatim (contact page + footer).
+    contact_phone: str | None = Field(default=None, max_length=40)
+    contact_email: str | None = Field(default=None, max_length=120)
 
     @field_validator("domain")
     @classmethod

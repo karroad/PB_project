@@ -227,6 +227,12 @@ class ContentAgent(Agent):
             await ctx.log(f"{len(flags)} statements flagged for human review", level="warning")
         words = sum(len(t.split()) for t in texts)
         await ctx.log(f"{words:,} words of original copy", level="success", progress=100)
+        # User-provided contact details override the AI's placeholders and are shown verbatim.
+        contact = c.setdefault("contact", {})
+        if ctx.state.get("contact_email"):
+            contact["email"] = ctx.state["contact_email"]
+        if ctx.state.get("contact_phone"):
+            contact["phone"] = ctx.state["contact_phone"]
         ctx.state["content"] = c
         return {"summary": c["home"]["hero_title"], "highlights": [
             chips("Articles", [a["title"] for a in c["articles"]]),
