@@ -115,8 +115,8 @@ export default function SitePage() {
           onPublish={can("operator") ? () => setPub(true) : undefined} onRequestChanges={can("operator") ? () => setTab("changes") : undefined} /> : <Empty icon={Workflow} title="No jobs yet" />)}
         {tab === "preview" && <Preview site={site} />}
         {tab === "changes" && <Changes site={site} disabled={blocked} onStarted={(j) => startJob(j, "Applying your changes to the preview")} />}
-        {tab === "brand" && <Brand site={site} />}
-        {tab === "content" && <Content site={site} />}
+        {tab === "brand" && <Brand site={site} disabled={blocked} onStarted={(j) => startJob(j, "Applying your changes to the preview")} />}
+        {tab === "content" && <Content site={site} disabled={blocked} onStarted={(j) => startJob(j, "Applying your changes to the preview")} />}
         {tab === "quality" && <Quality site={site} />}
         {tab === "deployments" && <Deployments site={site} onChange={load} />}
         {tab === "code" && <CodeView site={site} />}
@@ -131,6 +131,19 @@ export default function SitePage() {
       <DeleteModal open={del} onClose={() => setDel(false)} site={site} onDeleted={() => router.push("/")} />
     </div>
   );
+}
+
+// Direct editors reuse the revision pipeline: they build a plain-language instruction and
+// POST it to /changes (same endpoint as "Request changes"), which re-renders the preview.
+async function applyEdit(siteId: string, instruction: string) {
+  return api<Job>(`/api/websites/${siteId}/changes`, { method: "POST", json: { instruction } });
+}
+const quo = (s: string) => `"${s.replace(/["“”]/g, "'").replace(/\s+/g, " ").trim()}"`;
+function normHex(h?: string) {
+  const v = (h ?? "").trim().replace(/^#/, "");
+  if (/^[0-9a-fA-F]{6}$/.test(v)) return "#" + v;
+  if (/^[0-9a-fA-F]{3}$/.test(v)) return "#" + v.split("").map((x) => x + x).join("");
+  return "#888888";
 }
 
 function Changes({ site, disabled, onStarted }: { site: Website; disabled: boolean; onStarted: (j: Job) => void }) {
@@ -209,11 +222,54 @@ function Preview({ site }: { site: Website }) {
   );
 }
 
-function Brand({ site }: { site: Website }) {
+function Brand({ site, disabled, onStarted }: { site: Website; disabled: boolean; onStarted: (j: Job) => void }) {
   const c = site.config ?? {};
   if (!c.brand) return <Empty icon={Palette} title="Brand not generated yet" />;
+  const SLOTS = ["primary", "secondary", "accent", "background", "surface", "text"];
+  const base = c.brand.palette as Record<string, string>;
+  const [pal, setPal] = useState<Record<string, string>>(() => ({ ...base }));
+  const [fh, setFh] = useState<string>(c.brand.fonts?.heading ?? "");
+  const [fb, setFb] = useState<string>(c.brand.fonts?.body ?? "");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<any>(null);
+  const canPreview = !!site.config?.preview;
+  const eq = (a?: string, b?: string) => (a ?? "").toLowerCase() === (b ?? "").toLowerCase();
+  const dirty = SLOTS.some((s) => !eq(pal[s], base[s])) || fh !== (c.brand.fonts?.heading ?? "") || fb !== (c.brand.fonts?.body ?? "");
+  const apply = async () => {
+    const lines: string[] = [];
+    SLOTS.forEach((s) => { if (!eq(pal[s], base[s]) && pal[s]) lines.push(`Change ${s} colour to ${normHex(pal[s])}`); });
+    if (fh && fh !== (c.brand.fonts?.heading ?? "")) lines.push(`Use ${fh} for headings`);
+    if (fb && fb !== (c.brand.fonts?.body ?? "")) lines.push(`Use ${fb} for body`);
+    if (!lines.length) return;
+    setBusy(true); setErr(null);
+    try { const j = await applyEdit(site.id, lines.join("\n")); onStarted(j); }
+    catch (e) { setErr(e); } finally { setBusy(false); }
+  };
   return (
     <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+      <Card className="lg:col-span-2">
+        <h3 className="mb-1 font-display font-semibold">Edit colours &amp; fonts</h3>
+        <p className="mb-4 text-sm text-slate-500">Change colours and fonts after generation. Applied to the <strong>preview</strong>; the live site only changes when you publish.</p>
+        {!canPreview ? <p className="text-sm text-slate-500">Available once the first preview is ready.</p> : (<>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+            {SLOTS.map((s) => (
+              <div key={s}>
+                <label className="label capitalize">{s}</label>
+                <div className="flex items-center gap-2">
+                  <input type="color" aria-label={s} value={normHex(pal[s])} onChange={(e) => setPal((p) => ({ ...p, [s]: e.target.value }))} className="h-9 w-9 shrink-0 cursor-pointer rounded border border-slate-200 bg-white p-0.5" />
+                  <input className="input font-mono text-xs" value={pal[s] ?? ""} onChange={(e) => setPal((p) => ({ ...p, [s]: e.target.value }))} />
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            <div><label className="label">Heading font</label><input className="input" value={fh} onChange={(e) => setFh(e.target.value)} placeholder="e.g. Manrope" /></div>
+            <div><label className="label">Body font</label><input className="input" value={fb} onChange={(e) => setFb(e.target.value)} placeholder="e.g. Source Sans 3" /></div>
+          </div>
+          <div className="mt-3"><ErrorBox error={err} /></div>
+          <div className="mt-4 flex justify-end"><Button onClick={apply} loading={busy} disabled={disabled || !dirty}><Palette className="h-4 w-4" /> Apply to preview</Button></div>
+        </>)}
+      </Card>
       <Card><h3 className="mb-3 font-display font-semibold">Identity</h3>
         <p className="text-2xl font-bold" style={{ color: c.brand.palette.secondary }}>{c.brand.name}</p><p className="text-sm text-slate-500">{c.brand.tagline}</p>
         <Highlights items={[{ type: "palette", items: Object.entries(c.brand.palette).map(([name, hex]) => ({ name, hex })) }, { type: "fonts", items: [c.brand.fonts.heading, c.brand.fonts.body] },
@@ -234,15 +290,62 @@ function Brand({ site }: { site: Website }) {
   );
 }
 
-function Content({ site }: { site: Website }) {
+function Content({ site, disabled, onStarted }: { site: Website; disabled: boolean; onStarted: (j: Job) => void }) {
   const c = site.config?.content;
   if (!c) return <Empty icon={FileText} title="No content yet" />;
   const review = site.config?.content_review;
+  const tag0 = site.config?.brand?.tagline ?? "";
+  const cta0 = c.home.cta_primary ?? "";
+  const [hero, setHero] = useState<string>(c.home.hero_title ?? "");
+  const [sub, setSub] = useState<string>(c.home.hero_subtitle ?? "");
+  const [tag, setTag] = useState<string>(tag0);
+  const [cta, setCta] = useState<string>(cta0);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<any>(null);
+  const canPreview = !!site.config?.preview;
+  const dirty = hero !== (c.home.hero_title ?? "") || sub !== (c.home.hero_subtitle ?? "") || tag !== tag0 || cta !== cta0;
+  const run = async (instruction: string) => {
+    setBusy(true); setErr(null);
+    try { const j = await applyEdit(site.id, instruction); onStarted(j); }
+    catch (e) { setErr(e); } finally { setBusy(false); }
+  };
+  const saveText = () => {
+    const lines: string[] = [];
+    if (hero !== (c.home.hero_title ?? "")) lines.push(`Change the headline to ${quo(hero)}`);
+    if (sub !== (c.home.hero_subtitle ?? "")) lines.push(`Change the subtitle to ${quo(sub)}`);
+    if (tag !== tag0) lines.push(`Change the tagline to ${quo(tag)}`);
+    if (cta !== cta0) lines.push(`Change the main button to ${quo(cta)}`);
+    if (lines.length) run(lines.join("\n"));
+  };
   return (
     <div className="space-y-5">
       {review?.flags?.length > 0 && <div className="rounded-xl border border-amber-400/30 bg-amber-500/10 p-4 text-sm text-amber-700"><p className="font-medium">Flagged for human review</p><ul className="mt-1 list-disc pl-5 text-xs">{review.flags.map((f: string) => <li key={f}>{f}</li>)}</ul></div>}
-      <Card><p className="text-xs uppercase tracking-wider text-slate-500">Hero</p><h2 className="mt-1 font-display text-2xl font-bold">{c.home.hero_title}</h2><p className="text-slate-500">{c.home.hero_subtitle}</p>
-        <p className="mt-3 text-xs text-slate-500">Originality across portfolio: {Math.round((site.config?.originality?.score ?? 1) * 100)}%</p></Card>
+      <Card>
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <h3 className="font-display font-semibold">Edit text</h3>
+          {canPreview && <span className="text-xs text-slate-500">Edit directly, or let Claude rewrite it. Applied to the preview.</span>}
+        </div>
+        {!canPreview ? <p className="text-sm text-slate-500">Available once the first preview is ready.</p> : (<>
+          <div className="space-y-3">
+            {[["Headline", hero, setHero, "Rewrite the headline to be fresh, specific and compelling"],
+              ["Subtitle", sub, setSub, "Rewrite the hero subtitle to be clearer and more engaging"],
+              ["Tagline", tag, setTag, "Rewrite the tagline to be short and memorable"],
+              ["Main button", cta, setCta, "Rewrite the main call-to-action button label"]].map(([label, val, setter, rw]: any) => (
+              <div key={label}>
+                <label className="label">{label}</label>
+                <div className="flex items-start gap-2">
+                  <textarea rows={label === "Headline" || label === "Subtitle" ? 2 : 1} className="input flex-1" value={val} onChange={(e) => setter(e.target.value)} />
+                  <button type="button" disabled={disabled || busy} onClick={() => run(rw)} title="Rewrite with Claude"
+                    className="shrink-0 rounded-lg border border-violet-200 bg-violet-50 px-2.5 py-2 text-xs font-medium text-violet-700 hover:bg-violet-100 disabled:opacity-40">✨ Rewrite</button>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="mt-3"><ErrorBox error={err} /></div>
+          <div className="mt-4 flex justify-end"><Button onClick={saveText} loading={busy} disabled={disabled || !dirty}><Send className="h-4 w-4" /> Save text to preview</Button></div>
+        </>)}
+        <p className="mt-4 text-xs text-slate-500">Originality across portfolio: {Math.round((site.config?.originality?.score ?? 1) * 100)}%</p>
+      </Card>
       <div className="grid gap-4 md:grid-cols-2">
         {c.articles.map((a: any) => (
           <Card key={a.slug}><span className="chip">{a.category}</span><h3 className="mt-2 font-display font-semibold">{a.title}</h3><p className="mt-1 line-clamp-4 text-sm text-slate-500">{a.body.join(" ")}</p></Card>
